@@ -1,5 +1,20 @@
 # WeST @ RumorEval 2019
 
+## Dependencies
+
+Python 3.6+ is required.
+
+* See the [PyTorch Getting Started](https://pytorch.org/get-started) page for
+  how to install it.
+* Install [AllenNLP](https://allennlp.org/tutorials):
+  ```sh
+  pip3 install allennlp
+  ```
+* Install the [tokenizer for Twitter and Reddit posts](https://github.com/erikavaris/tokenizer):
+  ```sh
+  pip3 install git+https://github.com/erikavaris/tokenizer.git
+  ```
+
 ## Data
 
 * Place the ELMo weights and options files

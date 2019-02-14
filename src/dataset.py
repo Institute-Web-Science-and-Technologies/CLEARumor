@@ -16,6 +16,8 @@ from time import time
 from typing import Dict, List, Optional
 from zipfile import ZipFile
 
+from tokenizer.tokenizer import RedditTokenizer, TweetTokenizer
+
 DATA_DIR = Path('data')
 
 EXTERNAL_DATA_DIR = DATA_DIR / 'external'
@@ -29,6 +31,19 @@ TEST_DATA_ARCHIVE_FILE = EXTERNAL_DATA_DIR / 'rumoureval-2019' \
                                              '-test-data.zip'
 EVALUATION_DATA_FILE = EXTERNAL_DATA_DIR / 'final-eval-key.json'
 EVALUATION_SCRIPT_FILE = EXTERNAL_DATA_DIR / 'home_scorer_macro.py'
+
+
+def check_for_required_external_data_files() -> None:
+    """Checks whether all required external data files are present.
+
+    If not, will print a message to stderr and exit.
+    """
+    for required_file in [ELMO_WEIGHTS_FILE, ELMO_OPTIONS_FILE,
+                          TRAINING_DATA_ARCHIVE_FILE, TEST_DATA_ARCHIVE_FILE,
+                          EVALUATION_SCRIPT_FILE]:
+        if not required_file.exists():
+            exit('Required file "{}" is not present. See the README on how to '
+                 'obtain it.'.format(required_file))
 
 
 class Post:
@@ -184,19 +199,6 @@ class Post:
                     upvote_ratio=data.get('upvote_ratio'))
 
 
-def check_for_required_external_data_files() -> None:
-    """Checks whether all required external data files are present.
-
-    If not, will print a message to stderr and exit.
-    """
-    for required_file in [ELMO_WEIGHTS_FILE, ELMO_OPTIONS_FILE,
-                          TRAINING_DATA_ARCHIVE_FILE, TEST_DATA_ARCHIVE_FILE,
-                          EVALUATION_SCRIPT_FILE]:
-        if not required_file.exists():
-            exit('Required file "{}" is not present. See the README on how to '
-                 'obtain it.'.format(required_file))
-
-
 def load_posts() -> Dict[str, Post]:
     """Loads all Twitter and Reddit posts into a dictionary.
 
@@ -308,6 +310,9 @@ def load_posts() -> Dict[str, Post]:
         walk(thread_structure, 0)
         return post_depths
 
+    print('Loading posts...')
+    time_before = time()
+
     training_data_archive = ZipFile(TRAINING_DATA_ARCHIVE_FILE)
     training_data_contents = get_archive_directory_structure(
         training_data_archive)
@@ -367,7 +372,69 @@ def load_posts() -> Dict[str, Post]:
                     source_id=source_post.id)
                 posts[reply_post.id] = reply_post
 
+    time_after = time()
+    print('  Took {:.2f}s.'.format(time_after - time_before))
+    print('  Number of posts: {:d} (Reddit={:d}, Twitter={:d})'.format(
+        len(posts),
+        sum(1 for p in posts.values() if p.source == Post.PostSource.reddit),
+        sum(1 for p in posts.values() if p.source == Post.PostSource.twitter)))
+
     return posts
+
+
+tokenizer_args = {
+    'preserve_case': False,
+    'preserve_handles': False,
+    'preserve_hashes': False,
+    'preserve_len': False,
+    'preserve_url': False,
+}
+tweet_tokenizer = TweetTokenizer(**tokenizer_args)
+reddit_tokenizer = RedditTokenizer(**tokenizer_args)
+
+
+class PreprocessedPost(Post):
+    """Data class for preprocessed posts.
+
+    See `Post` for more information, the only difference is that `text` is now
+    a list of tokens.
+    """
+
+    def __init__(self, post: Post):
+        super().__init__(post.id, post.text, post.depth, post.source,
+                         post.has_media, post.source_id, post.topic,
+                         post.user_verified, post.followers_count,
+                         post.friends_count, post.upvote_ratio)
+
+        if post.source == Post.PostSource.twitter:
+            self.text: List[str] = tweet_tokenizer.tokenize(self.text)
+        elif post.source == Post.PostSource.reddit:
+            self.text: List[str] = reddit_tokenizer.tokenize(self.text)
+        else:
+            raise ValueError()
+
+    def __repr__(self):
+        return 'PreprocessedPost {}'.format(vars(self))
+
+
+def preprocess_posts(posts: Dict[str, Post]) -> Dict[str, PreprocessedPost]:
+    """Preprocesses all posts in the dataset.
+
+    Args:
+        posts: A dictionary mapping post IDs to `Post` instances. Can be built
+            with `load_post`().
+
+    Returns:
+        A dictionary mapping post IDs to `PreprocessedPost` instances.
+    """
+    print('Preprocessing posts...')
+    time_before = time()
+    preprocessed_posts = {post_id: PreprocessedPost(post)
+                          for post_id, post in posts.items()}
+    time_after = time()
+    print('  Took {:.2f}s.'.format(time_after - time_before))
+
+    return preprocessed_posts
 
 
 class SdqcInstance:
@@ -411,6 +478,9 @@ def load_sdcq_instances() -> (List[SdqcInstance],
         return [SdqcInstance(post_id, SdqcInstance.SdqcLabel[label])
                 for post_id, label in json_dict['subtaskaenglish'].items()]
 
+    print('Loading SDQC instances...')
+    time_before = time()
+
     training_data_archive = ZipFile(TRAINING_DATA_ARCHIVE_FILE)
     sdqc_train = load_from_json_dict(json.loads(training_data_archive.read(
         'rumoureval-2019-training-data/train-key.json')))
@@ -421,6 +491,11 @@ def load_sdcq_instances() -> (List[SdqcInstance],
     if EVALUATION_DATA_FILE.exists():
         with EVALUATION_DATA_FILE.open('rb') as fin:
             sdqc_test = load_from_json_dict(json.loads(fin.read()))
+
+    time_after = time()
+    print('  Took {:.2f}s'.format(time_after - time_before))
+    print('  Number of SDQC instances: train={:d}, dev={:d}, test={:d}'.format(
+        len(sdqc_train), len(sdqc_dev), len(sdqc_test) if sdqc_test else 0))
 
     return sdqc_train, sdqc_dev, sdqc_test
 
@@ -464,6 +539,9 @@ def load_verif_instances() -> (List[VerifInstance],
         return [VerifInstance(post_id, VerifInstance.VerifLabel[label])
                 for post_id, label in json_dict['subtaskbenglish'].items()]
 
+    print('Loading Verification instances...')
+    time_before = time()
+
     training_data_archive = ZipFile(TRAINING_DATA_ARCHIVE_FILE)
     verif_train = load_from_json_dict(json.loads(training_data_archive.read(
         'rumoureval-2019-training-data/train-key.json')))
@@ -475,51 +553,10 @@ def load_verif_instances() -> (List[VerifInstance],
         with EVALUATION_DATA_FILE.open('rb') as fin:
             verif_test = load_from_json_dict(json.loads(fin.read()))
 
-    return verif_train, verif_dev, verif_test
-
-
-def load() -> (Dict[str, Post],
-               List[SdqcInstance],
-               List[SdqcInstance],
-               Optional[List[SdqcInstance]],
-               List[VerifInstance],
-               List[VerifInstance],
-               Optional[List[VerifInstance]]):
-    """Load all Twitter/Reddit posts and SDQC and Verification datasets.
-
-    See the `load_posts()`, `load_sdqc_instances()`, and
-    `load_verif_instances()` for further documentation.
-
-    Also prints a short analysis of the dataset.
-
-    Returns:
-        A tuple containing: (1) a dictionary mapping post IDs to post objects,
-        the SDQC (2) train, (3) dev, and (4) test datasets, the Verification
-        (5) train, (6) dev, and (7) test datasets.
-    """
-    check_for_required_external_data_files()
-
-    print('Loading posts...')
-    time_before = time()
-    posts = load_posts()
-    time_after = time()
-    print('  Took {:.2f}s.'.format(time_after - time_before))
-    print('  Number of posts: {:d} (Reddit={:d}, Twitter={:d})'.format(
-        len(posts),
-        sum(1 for p in posts.values() if p.source == Post.PostSource.reddit),
-        sum(1 for p in posts.values() if p.source == Post.PostSource.twitter)))
-
-    print('Loading instances...')
-    time_before = time()
-    sdqc_train, sdqc_dev, sdqc_test = load_sdcq_instances()
-    verif_train, verif_dev, verif_test = load_verif_instances()
     time_after = time()
     print('  Took {:.2f}s'.format(time_after - time_before))
-    print('  Number of SDQC instances: train={:d}, dev={:d}, test={:d}'.format(
-        len(sdqc_train), len(sdqc_dev), len(sdqc_test) if sdqc_test else 0))
-    print('  Number of Verif instances: train={:d}, dev={:d}, test={:d}'.format(
-        len(verif_train), len(verif_dev), len(verif_test) if verif_test else 0))
+    print('  Number of Verification instances: train={:d}, dev={:d}, test={:d}'
+          .format(len(verif_train), len(verif_dev),
+                  len(verif_test) if verif_test else 0))
 
-    return (posts,
-            sdqc_train, sdqc_dev, sdqc_test,
-            verif_train, verif_dev, verif_test)
+    return verif_train, verif_dev, verif_test
