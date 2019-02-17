@@ -21,14 +21,18 @@ from tokenizer.tokenizer import RedditTokenizer, TweetTokenizer
 DATA_DIR = Path('data')
 
 EXTERNAL_DATA_DIR = DATA_DIR / 'external'
-ELMO_WEIGHTS_FILE = EXTERNAL_DATA_DIR / 'elmo_2x4096_512_2048cnn_2xhighway' \
-                                        '_5.5B_weights.hdf5'
-ELMO_OPTIONS_FILE = EXTERNAL_DATA_DIR / 'elmo_2x4096_512_2048cnn_2xhighway' \
-                                        '_5.5B_options.json'
-TRAINING_DATA_ARCHIVE_FILE = EXTERNAL_DATA_DIR / 'rumoureval-2019' \
-                                                 '-training-data.zip'
-TEST_DATA_ARCHIVE_FILE = EXTERNAL_DATA_DIR / 'rumoureval-2019' \
-                                             '-test-data.zip'
+ELMO_WEIGHTS_FILE = (EXTERNAL_DATA_DIR
+                     / 'elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5')
+ELMO_OPTIONS_FILE = (EXTERNAL_DATA_DIR
+                     / 'elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json')
+ELMO_WEIGHTS_FILE = (EXTERNAL_DATA_DIR
+                     / 'elmo_2x1024_128_2048cnn_1xhighway_weights.hdf5')
+ELMO_OPTIONS_FILE = (EXTERNAL_DATA_DIR
+                     / 'elmo_2x1024_128_2048cnn_1xhighway_options.json')
+TRAINING_DATA_ARCHIVE_FILE = (EXTERNAL_DATA_DIR
+                              / 'rumoureval-2019-training-data.zip')
+TEST_DATA_ARCHIVE_FILE = (EXTERNAL_DATA_DIR
+                          / 'rumoureval-2019-test-data.zip')
 EVALUATION_DATA_FILE = EXTERNAL_DATA_DIR / 'final-eval-key.json'
 EVALUATION_SCRIPT_FILE = EXTERNAL_DATA_DIR / 'home_scorer_macro.py'
 
@@ -46,12 +50,23 @@ def check_for_required_external_data_files() -> None:
                  'obtain it.'.format(required_file))
 
 
+TOKENIZER_ARGS = {
+    'preserve_case': False,
+    'preserve_handles': False,
+    'preserve_hashes': False,
+    'preserve_len': False,
+    'preserve_url': False,
+}
+TWEET_TOKENIZER = TweetTokenizer(**TOKENIZER_ARGS)
+REDDIT_TOKENIZER = RedditTokenizer(**TOKENIZER_ARGS)
+
+
 class Post:
     """Data class for both Twitter and Reddit posts.
 
     Args:
         id: ID of the post.
-        text: Text of the post for Twitter, title/body of the post for Reddit.
+        text: Tokenized text of the the post for Twitter, title/body for Reddit.
         depth: Depth in the thread. Source posts always have `depth=0`, replies
             to source posts have `depth=1`, replies to replies have `depth=2`,
             and so forth.
@@ -71,7 +86,7 @@ class Post:
             posts, since the concept doesn't exist for Twitter.
     """
 
-    class PostSource(Enum):
+    class Source(Enum):
         """Enum to designate whether a posts is from Twitter or from Reddit."""
         twitter = 1
         reddit = 2
@@ -80,7 +95,7 @@ class Post:
                  id: str,
                  text: str,
                  depth: int,
-                 source: PostSource,
+                 source: Source,
                  has_media: bool,
                  source_id: Optional[str] = None,
                  topic: Optional[str] = None,
@@ -89,7 +104,14 @@ class Post:
                  friends_count: Optional[int] = None,
                  upvote_ratio: Optional[float] = None):
         self.id = id
-        self.text = text
+
+        if source == self.Source.twitter:
+            self.text: List[str] = TWEET_TOKENIZER.tokenize(text)
+        elif source == self.Source.reddit:
+            self.text: List[str] = REDDIT_TOKENIZER.tokenize(text)
+        else:
+            raise ValueError()
+
         self.depth = depth
         self.source = source
         self.has_media = has_media
@@ -118,9 +140,9 @@ class Post:
     @property
     def url(self) -> str:
         """Url of the post (useful for debugging)."""
-        if self.source == self.PostSource.twitter:
+        if self.source == self.Source.twitter:
             return 'https://twitter.com/statuses/{}'.format(self.id)
-        elif self.source == self.PostSource.reddit:
+        elif self.source == self.Source.reddit:
             if self.source_id == self.id:
                 return 'https://reddit.com//comments/{}'.format(self.id)
             return 'https://reddit.com//comments/{}//{}'.format(self.source_id,
@@ -153,7 +175,7 @@ class Post:
         return Post(id=id,
                     text=twitter_dict['text'],
                     depth=post_depths[id],
-                    source=cls.PostSource.twitter,
+                    source=cls.Source.twitter,
                     has_media='media' in twitter_dict['entities'],
                     source_id=source_id,
                     topic=topic,
@@ -168,12 +190,10 @@ class Post:
                               source_id: Optional[str] = None) -> 'Post':
         """Creates a `Post` instance from a JSON dict of a Reddit post.
 
-        For some reason, the JSON files for 19 Reddit reply posts from the
-        training dataset (with source IDs either "49l01s" or "8j9s33") and 71
-        reply posts from the testing dataset (with source ID "7imq99") contain
-        only their ID data, and are missing all other data. Since these post are
-        still referenced in the labeled datasets, we just return them with an
-        empty text (`''`).
+        There are labels for some deleted Reddit posts (all classified as
+        "comment"). For these posts only the ID is available. The text is set
+        to be empty. See:
+        https://groups.google.com/forum/#!msg/rumoureval/-6XzTDhWirk/eSc31xFOFQAJ
 
         Args:
             reddit_dict: The JSON dict.
@@ -192,7 +212,7 @@ class Post:
         return Post(id=id,
                     text=data.get('title') or data.get('body') or '',
                     depth=post_depths[id],
-                    source=cls.PostSource.reddit,
+                    source=cls.Source.reddit,
                     has_media=('domain' in data
                                and not data['domain'].startswith('self.')),
                     source_id=source_id,
@@ -372,69 +392,14 @@ def load_posts() -> Dict[str, Post]:
                     source_id=source_post.id)
                 posts[reply_post.id] = reply_post
 
-    time_after = time()
-    print('  Took {:.2f}s.'.format(time_after - time_before))
     print('  Number of posts: {:d} (Reddit={:d}, Twitter={:d})'.format(
         len(posts),
-        sum(1 for p in posts.values() if p.source == Post.PostSource.reddit),
-        sum(1 for p in posts.values() if p.source == Post.PostSource.twitter)))
-
-    return posts
-
-
-tokenizer_args = {
-    'preserve_case': False,
-    'preserve_handles': False,
-    'preserve_hashes': False,
-    'preserve_len': False,
-    'preserve_url': False,
-}
-tweet_tokenizer = TweetTokenizer(**tokenizer_args)
-reddit_tokenizer = RedditTokenizer(**tokenizer_args)
-
-
-class PreprocessedPost(Post):
-    """Data class for preprocessed posts.
-
-    See `Post` for more information, the only difference is that `text` is now
-    a list of tokens.
-    """
-
-    def __init__(self, post: Post):
-        super().__init__(post.id, post.text, post.depth, post.source,
-                         post.has_media, post.source_id, post.topic,
-                         post.user_verified, post.followers_count,
-                         post.friends_count, post.upvote_ratio)
-
-        if post.source == Post.PostSource.twitter:
-            self.text: List[str] = tweet_tokenizer.tokenize(self.text)
-        elif post.source == Post.PostSource.reddit:
-            self.text: List[str] = reddit_tokenizer.tokenize(self.text)
-        else:
-            raise ValueError()
-
-    def __repr__(self):
-        return 'PreprocessedPost {}'.format(vars(self))
-
-
-def preprocess_posts(posts: Dict[str, Post]) -> Dict[str, PreprocessedPost]:
-    """Preprocesses all posts in the dataset.
-
-    Args:
-        posts: A dictionary mapping post IDs to `Post` instances. Can be built
-            with `load_post`().
-
-    Returns:
-        A dictionary mapping post IDs to `PreprocessedPost` instances.
-    """
-    print('Preprocessing posts...')
-    time_before = time()
-    preprocessed_posts = {post_id: PreprocessedPost(post)
-                          for post_id, post in posts.items()}
+        sum(1 for p in posts.values() if p.source == Post.Source.reddit),
+        sum(1 for p in posts.values() if p.source == Post.Source.twitter)))
     time_after = time()
     print('  Took {:.2f}s.'.format(time_after - time_before))
 
-    return preprocessed_posts
+    return posts
 
 
 class SdqcInstance:
@@ -447,14 +412,14 @@ class SdqcInstance:
             in the thread's source post.
     """
 
-    class SdqcLabel(Enum):
+    class Label(Enum):
         """Enum for SDQC labels `support`, `deny`, `query`, and `comment`."""
-        support = 1
-        deny = 2
-        query = 3
-        comment = 4
+        support = 0
+        deny = 1
+        query = 2
+        comment = 3
 
-    def __init__(self, post_id: str, label: SdqcLabel):
+    def __init__(self, post_id: str, label: Label):
         self.post_id = post_id
         self.label = label
 
@@ -475,29 +440,21 @@ def load_sdcq_instances() -> (List[SdqcInstance],
 
     def load_from_json_dict(json_dict: Dict[str, Dict[str, str]]) \
             -> List[SdqcInstance]:
-        return [SdqcInstance(post_id, SdqcInstance.SdqcLabel[label])
+        return [SdqcInstance(post_id, SdqcInstance.Label[label])
                 for post_id, label in json_dict['subtaskaenglish'].items()]
 
-    print('Loading SDQC instances...')
-    time_before = time()
-
     training_data_archive = ZipFile(TRAINING_DATA_ARCHIVE_FILE)
-    sdqc_train = load_from_json_dict(json.loads(training_data_archive.read(
+    train = load_from_json_dict(json.loads(training_data_archive.read(
         'rumoureval-2019-training-data/train-key.json')))
-    sdqc_dev = load_from_json_dict(json.loads(training_data_archive.read(
+    dev = load_from_json_dict(json.loads(training_data_archive.read(
         'rumoureval-2019-training-data/dev-key.json')))
-    sdqc_test = None
+    test = None
 
     if EVALUATION_DATA_FILE.exists():
         with EVALUATION_DATA_FILE.open('rb') as fin:
-            sdqc_test = load_from_json_dict(json.loads(fin.read()))
+            test = load_from_json_dict(json.loads(fin.read()))
 
-    time_after = time()
-    print('  Took {:.2f}s'.format(time_after - time_before))
-    print('  Number of SDQC instances: train={:d}, dev={:d}, test={:d}'.format(
-        len(sdqc_train), len(sdqc_dev), len(sdqc_test) if sdqc_test else 0))
-
-    return sdqc_train, sdqc_dev, sdqc_test
+    return train, dev, test
 
 
 class VerifInstance:
@@ -509,13 +466,13 @@ class VerifInstance:
             `true`, `false`, or `unverified`.
     """
 
-    class VerifLabel(Enum):
+    class Label(Enum):
         """ Enum for verification labels `true`, `false`, and `unverified`."""
+        false = 0
         true = 1
-        false = 2
-        unverified = 3
+        unverified = 2
 
-    def __init__(self, post_id: str, label: VerifLabel):
+    def __init__(self, post_id: str, label: Label):
         self.post_id = post_id
         self.label = label
 
@@ -536,27 +493,18 @@ def load_verif_instances() -> (List[VerifInstance],
 
     def load_from_json_dict(json_dict: Dict[str, Dict[str, str]]) \
             -> List[VerifInstance]:
-        return [VerifInstance(post_id, VerifInstance.VerifLabel[label])
+        return [VerifInstance(post_id, VerifInstance.Label[label])
                 for post_id, label in json_dict['subtaskbenglish'].items()]
 
-    print('Loading Verification instances...')
-    time_before = time()
-
     training_data_archive = ZipFile(TRAINING_DATA_ARCHIVE_FILE)
-    verif_train = load_from_json_dict(json.loads(training_data_archive.read(
+    train = load_from_json_dict(json.loads(training_data_archive.read(
         'rumoureval-2019-training-data/train-key.json')))
-    verif_dev = load_from_json_dict(json.loads(training_data_archive.read(
+    dev = load_from_json_dict(json.loads(training_data_archive.read(
         'rumoureval-2019-training-data/dev-key.json')))
-    verif_test = None
+    test = None
 
     if EVALUATION_DATA_FILE.exists():
         with EVALUATION_DATA_FILE.open('rb') as fin:
-            verif_test = load_from_json_dict(json.loads(fin.read()))
+            test = load_from_json_dict(json.loads(fin.read()))
 
-    time_after = time()
-    print('  Took {:.2f}s'.format(time_after - time_before))
-    print('  Number of Verification instances: train={:d}, dev={:d}, test={:d}'
-          .format(len(verif_train), len(verif_dev),
-                  len(verif_test) if verif_test else 0))
-
-    return verif_train, verif_dev, verif_test
+    return train, dev, test
