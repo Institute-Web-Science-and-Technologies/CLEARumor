@@ -21,7 +21,18 @@ check_for_required_external_data_files()
 posts = load_posts()
 
 sdqc_hparams = Sdqc.Hyperparameters(
-    max_sentence_length=32, batch_size=256, num_epochs=10, learning_rate=0.01)
+    max_sentence_length=32,
+    batch_size=256,
+    num_epochs=10,
+    learning_rate=0.001,
+    elmo_dropout=0.5,
+    elmo_layer_norm=False,
+    conv_num_layers=2,
+    conv_kernel_sizes=[2, 3],
+    conv_num_channels=64,
+    dense_num_layers=3,
+    dense_num_hidden=128,
+    dense_dropout=0.5)
 sdqc = Sdqc(posts, sdqc_hparams, device)
 sdqc_results = sdqc.train()
 

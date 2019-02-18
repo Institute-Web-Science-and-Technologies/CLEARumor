@@ -5,6 +5,7 @@ from typing import Dict, List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from allennlp.modules import Elmo
 from sklearn.metrics import accuracy_score, f1_score
 from torch import nn, optim
@@ -24,11 +25,27 @@ class Sdqc:
                      max_sentence_length: int,
                      batch_size: int,
                      num_epochs: int,
-                     learning_rate: float):
+                     learning_rate: float,
+                     elmo_dropout: float,
+                     elmo_layer_norm: bool,
+                     conv_num_layers: int,
+                     conv_kernel_sizes: List[int],
+                     conv_num_channels: int,
+                     dense_num_layers: int,
+                     dense_num_hidden: int,
+                     dense_dropout: float):
             self.max_sentence_length = max_sentence_length
             self.batch_size = batch_size
             self.num_epochs = num_epochs
             self.learning_rate = learning_rate
+            self.elmo_dropout = elmo_dropout
+            self.elmo_layer_norm = elmo_layer_norm
+            self.conv_num_layers = conv_num_layers
+            self.conv_kernel_sizes = conv_kernel_sizes
+            self.conv_num_channels = conv_num_channels
+            self.dense_num_layers = dense_num_layers
+            self.dense_num_hidden = dense_num_hidden
+            self.dense_dropout = dense_dropout
 
     def __init__(self,
                  posts: Dict[str, Post],
@@ -81,46 +98,83 @@ class Sdqc:
         print('  Took {:.2f}s.'.format(time_after - time_before))
 
     class Model(nn.Module):
-        def __init__(self):
+        def __init__(self, hparams: 'Sdqc.Hyperparameters'):
             super().__init__()
-            self.elmo = Elmo(
-                ELMO_OPTIONS_FILE, ELMO_WEIGHTS_FILE,
-                num_output_representations=1,
-                dropout=0.5, requires_grad=False, do_layer_norm=False,
-                scalar_mix_parameters=[1 / 3, 1 / 3, 1 / 3])
-            self.linear = nn.Sequential(
-                nn.Linear(256, 100),
-                nn.ReLU(),
-                nn.Linear(100, 4),
-            )
+            self._hparams = hparams
+
+            self._elmo = Elmo(ELMO_OPTIONS_FILE,
+                              ELMO_WEIGHTS_FILE,
+                              num_output_representations=1,
+                              dropout=self._hparams.elmo_dropout,
+                              requires_grad=False,
+                              do_layer_norm=self._hparams.elmo_layer_norm,
+                              scalar_mix_parameters=[1 / 3, 1 / 3, 1 / 3])
+
+            self._conv_layers = nn.ModuleList()
+            for i in range(self._hparams.conv_num_layers):
+                layer = nn.ModuleDict()
+                for size in self._hparams.conv_kernel_sizes:
+                    conv = nn.Conv1d(
+                        in_channels=(256 if i == 0 else
+                                     len(self._hparams.conv_kernel_sizes)
+                                     * self._hparams.conv_num_channels),
+                        out_channels=self._hparams.conv_num_channels,
+                        kernel_size=size)
+                    batch_norm = nn.BatchNorm1d(
+                        num_features=self._hparams.conv_num_channels)
+                    layer['kernel_size{:d}'.format(size)] = nn.ModuleDict(
+                        {'conv': conv, 'batch_norm': batch_norm})
+                self._conv_layers.append(layer)
+
+            self._dense_layers = nn.ModuleList()
+            for i in range(self._hparams.dense_num_layers):
+                self._dense_layers.append(nn.Linear(
+                    in_features=((len(self._hparams.conv_kernel_sizes)
+                                  * self._hparams.conv_num_channels)
+                                 if i == 0 else self._hparams.dense_num_hidden),
+                    out_features=self._hparams.dense_num_hidden
+                ))
+
+            self._linear = nn.Linear(
+                in_features=self._hparams.dense_num_hidden,
+                out_features=len(SdqcInstance.Label))
+
+            # num_total_params = 0
+            # for i, (n, w) in enumerate(self.named_parameters()):
+            #     if w.requires_grad:
+            #         print(i, n, w.shape, w.numel())
+            #         num_total_params += w.numel()
+            # print('Num Total Parameters: {}'.format(num_total_params))
 
         def forward(self, text):
-            # print('-- text')
-            # print(text)
-            # print(text.shape)
+            x = self._elmo(text)['elmo_representations'][0].permute(0, 2, 1)
 
-            elmo = self.elmo(text)
-            # print('-- elmo representations')
-            # print(elmo['elmo_representations'][0])
-            # print(elmo['elmo_representations'][0].shape)
-            # print('-- sequence length')
-            # print(elmo['mask'])
-            # print(elmo['mask'].shape)
+            for layer in self._conv_layers:
+                h = []
+                for size in self._hparams.conv_kernel_sizes:
+                    conv_batch_norm = layer['kernel_size{:d}'.format(size)]
+                    conv = conv_batch_norm['conv']
+                    batch_norm = conv_batch_norm['batch_norm']
 
-            mean = elmo['elmo_representations'][0].mean(dim=1)
-            # print('-- mean')
-            # print(mean)
-            # print(mean.shape)
+                    h.append(batch_norm(F.relu(conv(
+                        F.pad(x, [(size - 1) // 2, size // 2])))))
+                x = torch.cat(h, dim=1)
 
-            logits = self.linear(mean)
-            # print('-- logits')
-            # print(logits)
-            # print(logits.shape)
+            x = F.avg_pool1d(x, kernel_size=self._hparams.max_sentence_length) \
+                .squeeze(dim=2)
+
+            for dense in self._dense_layers:
+                x = F.dropout(F.relu(dense(x)),
+                              p=self._hparams.dense_dropout,
+                              training=self.training)
+
+            logits = self._linear(x)
+
             return logits
 
     def train(self) -> Dict[str, str]:
         print('Training SDQC model...')
-        self.model = self.Model().to(self._device)
+        self.model = self.Model(self._hparams).to(self._device)
 
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(
