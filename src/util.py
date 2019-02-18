@@ -55,6 +55,9 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
 
     post_embeddings = {}
     batch_ids = []
+    # Add a dummy sentence with max_sentence_length to each batch to enforce
+    # that each batch of embeddings has the same shape. `batch_to_id()` and
+    # `elmo()` take care of zero padding shorter sentences for us.
     batch_texts = [['' for _ in range(max_sentence_length)]]
     for i, post in enumerate(posts.values()):
         batch_ids.append(post.id)
@@ -64,9 +67,13 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
             batch_character_ids = batch_to_ids(batch_texts).to(device)
             batch_texts = [['' for _ in range(max_sentence_length)]]
 
+            # - [0] to select first output representation (there is only one
+            #   because of `num_output_representations=1` at `elmo` creation.
+            # - [1:] to ignore dummy sentence added at the start.
             batch_embeddings = \
                 elmo(batch_character_ids)['elmo_representations'][0][1:]
             batch_embeddings = batch_embeddings.split(split_size=1, dim=0)
+            del batch_character_ids  # Free up memory sooner.
 
             for post_id, post_embedding in zip(batch_ids, batch_embeddings):
                 post_embedding.squeeze_(dim=0)
