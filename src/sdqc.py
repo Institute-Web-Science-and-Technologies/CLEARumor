@@ -6,15 +6,12 @@ from typing import Dict, List
 import numpy as np
 import torch
 import torch.nn.functional as F
-from allennlp.modules import Elmo
 from sklearn.metrics import accuracy_score, f1_score
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dataset import ELMO_OPTIONS_FILE, ELMO_WEIGHTS_FILE, Post, \
-    SdqcInstance, load_sdcq_instances
-from src.util import sentence_to_tensor
+from src.dataset import Post, SdqcInstance, load_sdcq_instances
 
 EVAL_DEV_EVERY_N_EPOCH = 5
 
@@ -26,8 +23,7 @@ class Sdqc:
                      batch_size: int,
                      num_epochs: int,
                      learning_rate: float,
-                     elmo_dropout: float,
-                     elmo_layer_norm: bool,
+                     num_input_dimensions: int,
                      conv_num_layers: int,
                      conv_kernel_sizes: List[int],
                      conv_num_channels: int,
@@ -38,8 +34,7 @@ class Sdqc:
             self.batch_size = batch_size
             self.num_epochs = num_epochs
             self.learning_rate = learning_rate
-            self.elmo_dropout = elmo_dropout
-            self.elmo_layer_norm = elmo_layer_norm
+            self.num_input_dimensions = num_input_dimensions
             self.conv_num_layers = conv_num_layers
             self.conv_kernel_sizes = conv_kernel_sizes
             self.conv_num_channels = conv_num_channels
@@ -49,9 +44,11 @@ class Sdqc:
 
     def __init__(self,
                  posts: Dict[str, Post],
+                 post_embeddings: Dict[str, torch.Tensor],
                  hparams: 'Sdqc.Hyperparameters',
                  device: torch.device):
         self._posts = posts
+        self._post_embeddings = post_embeddings
         self._hparams = hparams
         self._device = device
         self.model = None
@@ -62,15 +59,16 @@ class Sdqc:
         def __init__(self,
                      instances: List[SdqcInstance],
                      posts: Dict[str, Post],
+                     post_embeddings: Dict[str, torch.Tensor],
                      hparams: 'Sdqc.Hyperparameters',
                      device: torch.device):
             self._dataset: List[Dict[str, torch.Tensor]] = []
             for instance in instances:
                 post = posts[instance.post_id]
+
                 self._dataset.append({
                     'post_id': post.id,
-                    'text': sentence_to_tensor(
-                        post.text, hparams.max_sentence_length).to(device),
+                    'embedding': post_embeddings[post.id],
                     'label': torch.tensor(instance.label.value, device=device),
                 })
 
@@ -89,11 +87,14 @@ class Sdqc:
             len(train), len(dev), len(test) if test else 0))
 
         self._train_data = self.Dataset(
-            train, self._posts, self._hparams, self._device)
+            train, self._posts, self._post_embeddings, self._hparams,
+            self._device)
         self._dev_data = self.Dataset(
-            dev, self._posts, self._hparams, self._device)
+            dev, self._posts, self._post_embeddings, self._hparams,
+            self._device)
         self._test_data = self.Dataset(
-            test, self._posts, self._hparams, self._device)
+            test, self._posts, self._post_embeddings, self._hparams,
+            self._device)
         time_after = time()
         print('  Took {:.2f}s.'.format(time_after - time_before))
 
@@ -102,20 +103,13 @@ class Sdqc:
             super().__init__()
             self._hparams = hparams
 
-            self._elmo = Elmo(ELMO_OPTIONS_FILE,
-                              ELMO_WEIGHTS_FILE,
-                              num_output_representations=1,
-                              dropout=self._hparams.elmo_dropout,
-                              requires_grad=False,
-                              do_layer_norm=self._hparams.elmo_layer_norm,
-                              scalar_mix_parameters=[1 / 3, 1 / 3, 1 / 3])
-
             self._conv_layers = nn.ModuleList()
             for i in range(self._hparams.conv_num_layers):
                 layer = nn.ModuleDict()
                 for size in self._hparams.conv_kernel_sizes:
                     conv = nn.Conv1d(
-                        in_channels=(256 if i == 0 else
+                        in_channels=(self._hparams.num_input_dimensions
+                                     if i == 0 else
                                      len(self._hparams.conv_kernel_sizes)
                                      * self._hparams.conv_num_channels),
                         out_channels=self._hparams.conv_num_channels,
@@ -146,8 +140,8 @@ class Sdqc:
             #         num_total_params += w.numel()
             # print('Num Total Parameters: {}'.format(num_total_params))
 
-        def forward(self, text):
-            x = self._elmo(text)['elmo_representations'][0].permute(0, 2, 1)
+        def forward(self, embedding):
+            x = embedding
 
             for layer in self._conv_layers:
                 h = []
@@ -160,8 +154,8 @@ class Sdqc:
                         F.pad(x, [(size - 1) // 2, size // 2])))))
                 x = torch.cat(h, dim=1)
 
-            x = F.avg_pool1d(x, kernel_size=self._hparams.max_sentence_length) \
-                .squeeze(dim=2)
+            x = F.avg_pool1d(x, kernel_size=self._hparams.max_sentence_length)
+            x.squeeze_(dim=2)
 
             for dense in self._dense_layers:
                 x = F.dropout(F.relu(dense(x)),
@@ -195,7 +189,7 @@ class Sdqc:
                     optimizer.zero_grad()
 
                     self.model.train()
-                    batch_logits = self.model(batch['text'])
+                    batch_logits = self.model(batch['embedding'])
                     with torch.no_grad():
                         batch_prediction = torch.argmax(batch_logits, dim=1)
 
@@ -243,7 +237,7 @@ class Sdqc:
             data_loader = DataLoader(data, batch_size=self._hparams.batch_size)
             for batch_no, batch in enumerate(data_loader):
                 self.model.eval()
-                batch_logits = self.model(batch['text'])
+                batch_logits = self.model(batch['embedding'])
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
                 post_ids.append(batch['post_id'])
