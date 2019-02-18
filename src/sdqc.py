@@ -23,7 +23,8 @@ class Sdqc:
                      batch_size: int,
                      num_epochs: int,
                      learning_rate: float,
-                     num_input_dimensions: int,
+                     input_num_embedding_dimensions: int,
+                     input_num_auxiliary_dimensions: int,
                      conv_num_layers: int,
                      conv_kernel_sizes: List[int],
                      conv_num_channels: int,
@@ -34,7 +35,8 @@ class Sdqc:
             self.batch_size = batch_size
             self.num_epochs = num_epochs
             self.learning_rate = learning_rate
-            self.num_input_dimensions = num_input_dimensions
+            self.input_num_embedding_dimensions = input_num_embedding_dimensions
+            self.input_num_auxiliary_dimensions = input_num_auxiliary_dimensions
             self.conv_num_layers = conv_num_layers
             self.conv_kernel_sizes = conv_kernel_sizes
             self.conv_num_channels = conv_num_channels
@@ -65,10 +67,45 @@ class Sdqc:
             self._dataset: List[Dict[str, torch.Tensor]] = []
             for instance in instances:
                 post = posts[instance.post_id]
+                post_embedding = post_embeddings[post.id]
+
+                post_type = np.array(
+                    [post.has_source_depth,
+                     post.has_reply_depth,
+                     post.has_rreply_depth])
+
+                post_platform = np.array(
+                    [post.platform == Post.Platform.twitter,
+                     post.platform == Post.Platform.reddit])
+
+                post_author = np.array([0, 1, 0, 0, 1], dtype=np.float)
+                if post.platform == Post.Platform.twitter:
+                    post_author = np.array(
+                        [post.user_verified,
+                         not post.user_verified,
+                         post.followers_count,
+                         post.friends_count,
+                         post.followers_count / (post.friends_count + 1e-8)])
+
+                post_similarity_to_source = 1
+                if not post.has_source_depth:
+                    post_embedding_mean = post_embedding.mean(dim=1)
+                    source_embedding_mean = \
+                        post_embeddings[post.source_id].mean(dim=1)
+                    post_similarity_to_source = F.cosine_similarity(
+                        post_embedding_mean, source_embedding_mean,
+                        dim=0).item()
+
+                post_auxiliary = (np.concatenate((post_type,
+                                                  post_platform,
+                                                  post_author,
+                                                  [post_similarity_to_source]))
+                                  .astype(np.float32))
 
                 self._dataset.append({
                     'post_id': post.id,
-                    'embedding': post_embeddings[post.id],
+                    'embedding': post_embedding,
+                    'auxiliary': torch.from_numpy(post_auxiliary).to(device),
                     'label': torch.tensor(instance.label.value, device=device),
                 })
 
@@ -108,10 +145,11 @@ class Sdqc:
                 layer = nn.ModuleDict()
                 for size in self._hparams.conv_kernel_sizes:
                     conv = nn.Conv1d(
-                        in_channels=(self._hparams.num_input_dimensions
-                                     if i == 0 else
-                                     len(self._hparams.conv_kernel_sizes)
-                                     * self._hparams.conv_num_channels),
+                        in_channels=(
+                            self._hparams.input_num_embedding_dimensions
+                            if i == 0 else
+                            len(self._hparams.conv_kernel_sizes)
+                            * self._hparams.conv_num_channels),
                         out_channels=self._hparams.conv_num_channels,
                         kernel_size=size)
                     batch_norm = nn.BatchNorm1d(
@@ -125,6 +163,7 @@ class Sdqc:
                 self._dense_layers.append(nn.Linear(
                     in_features=((len(self._hparams.conv_kernel_sizes)
                                   * self._hparams.conv_num_channels)
+                                 + self._hparams.input_num_auxiliary_dimensions
                                  if i == 0 else self._hparams.dense_num_hidden),
                     out_features=self._hparams.dense_num_hidden
                 ))
@@ -140,7 +179,7 @@ class Sdqc:
             #         num_total_params += w.numel()
             # print('Num Total Parameters: {}'.format(num_total_params))
 
-        def forward(self, embedding):
+        def forward(self, embedding, auxiliary):
             x = embedding
 
             for layer in self._conv_layers:
@@ -156,6 +195,9 @@ class Sdqc:
 
             x = F.avg_pool1d(x, kernel_size=self._hparams.max_sentence_length)
             x.squeeze_(dim=2)
+
+            if self._hparams.input_num_auxiliary_dimensions:
+                x = torch.cat((x, auxiliary), dim=1)
 
             for dense in self._dense_layers:
                 x = F.dropout(F.relu(dense(x)),
@@ -189,7 +231,8 @@ class Sdqc:
                     optimizer.zero_grad()
 
                     self.model.train()
-                    batch_logits = self.model(batch['embedding'])
+                    batch_logits = self.model(batch['embedding'],
+                                              batch['auxiliary'])
                     with torch.no_grad():
                         batch_prediction = torch.argmax(batch_logits, dim=1)
 
@@ -237,7 +280,8 @@ class Sdqc:
             data_loader = DataLoader(data, batch_size=self._hparams.batch_size)
             for batch_no, batch in enumerate(data_loader):
                 self.model.eval()
-                batch_logits = self.model(batch['embedding'])
+                batch_logits = self.model(batch['embedding'],
+                                          batch['auxiliary'])
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
                 post_ids.append(batch['post_id'])

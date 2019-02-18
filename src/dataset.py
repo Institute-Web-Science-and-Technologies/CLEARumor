@@ -70,7 +70,7 @@ class Post:
         depth: Depth in the thread. Source posts always have `depth=0`, replies
             to source posts have `depth=1`, replies to replies have `depth=2`,
             and so forth.
-        source: Whether the post is from Twitter or from Reddit.
+        platform: Whether the post is from Twitter or from Reddit.
         has_media: `True` if the posts links to any media, `False` otherwise.
         source_id: The ID of the source post of the thread. If the current post
             is itself a source post, this is equal to `self.id`.
@@ -86,7 +86,7 @@ class Post:
             posts, since the concept doesn't exist for Twitter.
     """
 
-    class Source(Enum):
+    class Platform(Enum):
         """Enum to designate whether a posts is from Twitter or from Reddit."""
         twitter = 1
         reddit = 2
@@ -95,7 +95,7 @@ class Post:
                  id: str,
                  text: str,
                  depth: int,
-                 source: Source,
+                 platform: Platform,
                  has_media: bool,
                  source_id: Optional[str] = None,
                  topic: Optional[str] = None,
@@ -105,15 +105,15 @@ class Post:
                  upvote_ratio: Optional[float] = None):
         self.id = id
 
-        if source == self.Source.twitter:
+        if platform == self.Platform.twitter:
             self.text: List[str] = TWEET_TOKENIZER.tokenize(text)
-        elif source == self.Source.reddit:
+        elif platform == self.Platform.reddit:
             self.text: List[str] = REDDIT_TOKENIZER.tokenize(text)
         else:
             raise ValueError()
 
         self.depth = depth
-        self.source = source
+        self.platform = platform
         self.has_media = has_media
         self.source_id = source_id or self.id
         self.topic = topic
@@ -140,9 +140,9 @@ class Post:
     @property
     def url(self) -> str:
         """Url of the post (useful for debugging)."""
-        if self.source == self.Source.twitter:
+        if self.platform == self.Platform.twitter:
             return 'https://twitter.com/statuses/{}'.format(self.id)
-        elif self.source == self.Source.reddit:
+        elif self.platform == self.Platform.reddit:
             if self.source_id == self.id:
                 return 'https://reddit.com//comments/{}'.format(self.id)
             return 'https://reddit.com//comments/{}//{}'.format(self.source_id,
@@ -175,7 +175,7 @@ class Post:
         return Post(id=id,
                     text=twitter_dict['text'],
                     depth=post_depths[id],
-                    source=cls.Source.twitter,
+                    platform=cls.Platform.twitter,
                     has_media='media' in twitter_dict['entities'],
                     source_id=source_id,
                     topic=topic,
@@ -212,7 +212,7 @@ class Post:
         return Post(id=id,
                     text=data.get('title') or data.get('body') or '',
                     depth=post_depths[id],
-                    source=cls.Source.reddit,
+                    platform=cls.Platform.reddit,
                     has_media=('domain' in data
                                and not data['domain'].startswith('self.')),
                     source_id=source_id,
@@ -394,8 +394,8 @@ def load_posts() -> Dict[str, Post]:
 
     print('  Number of posts: {:d} (Reddit={:d}, Twitter={:d})'.format(
         len(posts),
-        sum(1 for p in posts.values() if p.source == Post.Source.reddit),
-        sum(1 for p in posts.values() if p.source == Post.Source.twitter)))
+        sum(1 for p in posts.values() if p.platform == Post.Platform.reddit),
+        sum(1 for p in posts.values() if p.platform == Post.Platform.twitter)))
     time_after = time()
     print('  Took {:.2f}s.'.format(time_after - time_before))
 
