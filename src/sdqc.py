@@ -14,7 +14,7 @@
 
 from enum import Enum
 from time import time
-from typing import Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -140,10 +140,18 @@ class Sdqc:
         def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
             return self._dataset[index]
 
-        def calc_stats_for_aux_feature(self, index: int) \
+        def calc_stats_for_aux_feature(self,
+                                       index: int,
+                                       filter_func: Optional[
+                                           Callable[[str], bool]] = None) \
                 -> (float, float, float, float):
+            if not filter_func:
+                def filter_func(_post_id: str) -> bool:
+                    return True
+
             feature_values = np.array([post['aux'][index].item()
-                                       for post in self._dataset])
+                                       for post in self._dataset
+                                       if filter_func(post['post_id'])])
             return (feature_values.min(),
                     feature_values.max(),
                     feature_values.mean(),
@@ -152,18 +160,34 @@ class Sdqc:
         def min_max_scale_aux_feature(self,
                                       index: int,
                                       min: float,
-                                      max: float) -> None:
+                                      max: float,
+                                      filter_func: Optional[
+                                          Callable[[str], bool]] = None) \
+                -> None:
+            if not filter_func:
+                def filter_func(_post_id: str) -> bool:
+                    return True
+
             for post in self._dataset:
-                value = post['aux'][index]
-                post['aux'][index] = (value - min) / (max - min)
+                if filter_func(post['post_id']):
+                    value = post['aux'][index]
+                    post['aux'][index] = (value - min) / (max - min)
 
         def standard_scale_aux_feature(self,
                                        index: int,
                                        mean: float,
-                                       std: float) -> None:
+                                       std: float,
+                                       filter_func: Optional[
+                                           Callable[[str], bool]] = None) \
+                -> None:
+            if not filter_func:
+                def filter_func(_post_id: str) -> bool:
+                    return True
+
             for post in self._dataset:
-                value = post['aux'][index]
-                post['aux'][index] = (value - mean) / std
+                if filter_func(post['post_id']):
+                    value = post['aux'][index]
+                    post['aux'][index] = (value - mean) / std
 
     def _load_data(self):
         print()
@@ -183,22 +207,28 @@ class Sdqc:
             test, self._posts, self._post_embeddings, self._hparams,
             self._device)
 
+        def filter_func(post_id: str) -> bool:
+            return self._posts[post_id].platform == Post.Platform.twitter
+
         for index in self._hparams.input_aux_scaling_features:
             min, max, mean, std = \
-                self._train_data.calc_stats_for_aux_feature(index)
+                self._train_data.calc_stats_for_aux_feature(index, filter_func)
+            print(min, max, mean, std)
             if self._hparams.input_aux_scaling_mode \
                     == self._hparams.ScalingMode.none:
                 pass
             elif self._hparams.input_aux_scaling_mode \
                     == self._hparams.ScalingMode.min_max:
-                self._train_data.min_max_scale_aux_feature(index, min, max)
-                self._dev_data.min_max_scale_aux_feature(index, min, max)
-                self._test_data.min_max_scale_aux_feature(index, min, max)
+                args = [index, min, max, filter_func]
+                self._train_data.min_max_scale_aux_feature(*args)
+                self._dev_data.min_max_scale_aux_feature(*args)
+                self._test_data.min_max_scale_aux_feature(*args)
             elif self._hparams.input_aux_scaling_mode \
                     == self._hparams.ScalingMode.standard:
-                self._train_data.standard_scale_aux_feature(index, mean, std)
-                self._dev_data.standard_scale_aux_feature(index, mean, std)
-                self._test_data.standard_scale_aux_feature(index, mean, std)
+                args = [index, mean, std, filter_func]
+                self._train_data.standard_scale_aux_feature(*args)
+                self._dev_data.standard_scale_aux_feature(*args)
+                self._test_data.standard_scale_aux_feature(*args)
             else:
                 raise ValueError('Unimplemented enum variant.')
 
