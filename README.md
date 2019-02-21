@@ -1,4 +1,4 @@
-# WeST @ RumorEval 2019
+# CLEARumor: ConvoLving ELMo Against Rumors @&nbsp;RumorEval 2019
 
 ## Dependencies
 
@@ -32,3 +32,17 @@ Python 3.6+ is required.
   So far, this file has only been shared privately with all participants in the
   competition. It is under an embargo for a couple of months, but will be
   released publicly later.
+
+## Contacts
+
+If you have any questions regarding the code or the employed machine learning
+architectures, please, don't hesitate to contact the authors or report an issue.
+
+* Lukas Schmelzeisen, [lukas@uni-koblenz.de](mailto:lukas@uni-koblenz.de)
+* Ipek Baris, [ibaris@uni-koblenz.de](mailto:ibaris@uni-koblenz.de)
+* [Institute for Web Science and Technoloogies](https://west.uni-koblenz.de),
+  University of Koblenz-Landau
+
+## License
+
+All code is license under the [Apache License Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
