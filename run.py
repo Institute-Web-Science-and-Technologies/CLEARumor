@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from time import time
 from warnings import filterwarnings
 
 import torch
@@ -8,6 +9,8 @@ from src.dataset import check_for_required_external_data_files, load_posts
 from src.sdqc import Sdqc
 from src.util import calculate_post_elmo_embeddings
 from src.verif import Verif
+
+time_before = time()
 
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.fastest = True
@@ -26,16 +29,19 @@ post_embeddings = calculate_post_elmo_embeddings(
     batch_size=512,
     scalar_mix_parameters=[0, 0, 0],
     device=device)
-num_embedding_dimensions = next(iter(post_embeddings.values())).shape[0]
+num_emb_dims = next(iter(post_embeddings.values())).shape[0]
 
 sdqc_hparams = Sdqc.Hyperparameters(
     max_sentence_length=32,
     batch_size=512,
     num_epochs=50,
-    learning_rate=0.001,
-    input_num_embedding_dimensions=num_embedding_dimensions,
-    input_num_auxiliary_dimensions=11,
-    conv_num_layers=2,
+    learning_rate=1e-3,
+    class_weights=[1, 1, 1, 0.2],
+    input_num_emb_dims=num_emb_dims,
+    input_num_aux_dims=11,
+    input_aux_scaling_features=[7, 8, 9],
+    input_aux_scaling_mode=Sdqc.Hyperparameters.ScalingMode.min_max,
+    conv_num_layers=1,
     conv_kernel_sizes=[2, 3],
     conv_num_channels=64,
     dense_num_layers=3,
@@ -47,3 +53,6 @@ sdqc_results = sdqc.train()
 verif_hparams = Verif.Hyperparameters(
     max_sentence_length=32, batch_size=256, num_epochs=10, learning_rate=0.01)
 verif = Verif(posts, post_embeddings, verif_hparams, device)
+
+time_after = time()
+print('Program ran for {:.2f}s in total'.format(time_after - time_before))

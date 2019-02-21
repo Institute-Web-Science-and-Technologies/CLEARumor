@@ -30,7 +30,7 @@ class Verif:
                 post = posts[instance.post_id]
                 self._dataset.append({
                     'post_id': post.id,
-                    'embedding': post_embeddings[post.id],
+                    'emb': post_embeddings[post.id],
                     'label': torch.tensor(instance.label.value, device=device),
                 })
 

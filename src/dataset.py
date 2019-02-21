@@ -133,7 +133,7 @@ class Post:
         return self.depth == 1
 
     @property
-    def has_rreply_depth(self) -> bool:
+    def has_nested_depth(self) -> bool:
         """Whether the post is neither source nor reply to a thread's source."""
         return self.depth >= 2
 

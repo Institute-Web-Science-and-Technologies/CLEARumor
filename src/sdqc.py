@@ -1,4 +1,5 @@
 from collections.__init__ import OrderedDict
+from enum import Enum
 from itertools import chain
 from time import time
 from typing import Dict, List
@@ -18,13 +19,21 @@ EVAL_DEV_EVERY_N_EPOCH = 5
 
 class Sdqc:
     class Hyperparameters:
+        class ScalingMode(Enum):
+            none = 0
+            min_max = 1
+            standard = 2
+
         def __init__(self,
                      max_sentence_length: int,
                      batch_size: int,
                      num_epochs: int,
                      learning_rate: float,
-                     input_num_embedding_dimensions: int,
-                     input_num_auxiliary_dimensions: int,
+                     class_weights: List[float],
+                     input_num_emb_dims: int,
+                     input_num_aux_dims: int,
+                     input_aux_scaling_features: List[int],
+                     input_aux_scaling_mode: ScalingMode,
                      conv_num_layers: int,
                      conv_kernel_sizes: List[int],
                      conv_num_channels: int,
@@ -35,8 +44,11 @@ class Sdqc:
             self.batch_size = batch_size
             self.num_epochs = num_epochs
             self.learning_rate = learning_rate
-            self.input_num_embedding_dimensions = input_num_embedding_dimensions
-            self.input_num_auxiliary_dimensions = input_num_auxiliary_dimensions
+            self.class_weights = class_weights
+            self.input_num_emb_dims = input_num_emb_dims
+            self.input_num_aux_dims = input_num_aux_dims
+            self.input_aux_scaling_features = input_aux_scaling_features
+            self.input_aux_scaling_mode = input_aux_scaling_mode
             self.conv_num_layers = conv_num_layers
             self.conv_kernel_sizes = conv_kernel_sizes
             self.conv_num_channels = conv_num_channels
@@ -72,7 +84,7 @@ class Sdqc:
                 post_type = np.array(
                     [post.has_source_depth,
                      post.has_reply_depth,
-                     post.has_rreply_depth])
+                     post.has_nested_depth])
 
                 post_platform = np.array(
                     [post.platform == Post.Platform.twitter,
@@ -96,16 +108,16 @@ class Sdqc:
                         post_embedding_mean, source_embedding_mean,
                         dim=0).item()
 
-                post_auxiliary = (np.concatenate((post_type,
-                                                  post_platform,
-                                                  post_author,
-                                                  [post_similarity_to_source]))
-                                  .astype(np.float32))
+                post_aux = (np.concatenate((post_type,
+                                            post_platform,
+                                            post_author,
+                                            [post_similarity_to_source]))
+                            .astype(np.float32))
 
                 self._dataset.append({
                     'post_id': post.id,
-                    'embedding': post_embedding,
-                    'auxiliary': torch.from_numpy(post_auxiliary).to(device),
+                    'emb': post_embedding,
+                    'aux': torch.from_numpy(post_aux).to(device),
                     'label': torch.tensor(instance.label.value, device=device),
                 })
 
@@ -114,6 +126,31 @@ class Sdqc:
 
         def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
             return self._dataset[index]
+
+        def calc_stats_for_aux_feature(self, index: int) \
+                -> (float, float, float, float):
+            feature_values = np.array([post['aux'][index].item()
+                                       for post in self._dataset])
+            return (feature_values.min(),
+                    feature_values.max(),
+                    feature_values.mean(),
+                    feature_values.std())
+
+        def min_max_scale_aux_feature(self,
+                                      index: int,
+                                      min: float,
+                                      max: float) -> None:
+            for post in self._dataset:
+                value = post['aux'][index]
+                post['aux'][index] = (value - min) / (max - min)
+
+        def standard_scale_aux_feature(self,
+                                       index: int,
+                                       mean: float,
+                                       std: float) -> None:
+            for post in self._dataset:
+                value = post['aux'][index]
+                post['aux'][index] = (value - mean) / std
 
     def _load_data(self):
         print()
@@ -132,6 +169,26 @@ class Sdqc:
         self._test_data = self.Dataset(
             test, self._posts, self._post_embeddings, self._hparams,
             self._device)
+
+        for index in self._hparams.input_aux_scaling_features:
+            min, max, mean, std = \
+                self._train_data.calc_stats_for_aux_feature(index)
+            if self._hparams.input_aux_scaling_mode \
+                    == self._hparams.ScalingMode.none:
+                pass
+            elif self._hparams.input_aux_scaling_mode \
+                    == self._hparams.ScalingMode.min_max:
+                self._train_data.min_max_scale_aux_feature(index, min, max)
+                self._dev_data.min_max_scale_aux_feature(index, min, max)
+                self._test_data.min_max_scale_aux_feature(index, min, max)
+            elif self._hparams.input_aux_scaling_mode \
+                    == self._hparams.ScalingMode.standard:
+                self._train_data.standard_scale_aux_feature(index, mean, std)
+                self._dev_data.standard_scale_aux_feature(index, mean, std)
+                self._test_data.standard_scale_aux_feature(index, mean, std)
+            else:
+                raise ValueError('Unimplemented enum variant.')
+
         time_after = time()
         print('  Took {:.2f}s.'.format(time_after - time_before))
 
@@ -140,16 +197,19 @@ class Sdqc:
             super().__init__()
             self._hparams = hparams
 
+            emb_num_output_dims = self._hparams.input_num_emb_dims
+
+            # -- convolutional layers ------------------------------------------
+            conv_num_input_dims = emb_num_output_dims
+            conv_num_output_dims = (len(self._hparams.conv_kernel_sizes)
+                                    * self._hparams.conv_num_channels)
             self._conv_layers = nn.ModuleList()
             for i in range(self._hparams.conv_num_layers):
                 layer = nn.ModuleDict()
                 for size in self._hparams.conv_kernel_sizes:
                     conv = nn.Conv1d(
-                        in_channels=(
-                            self._hparams.input_num_embedding_dimensions
-                            if i == 0 else
-                            len(self._hparams.conv_kernel_sizes)
-                            * self._hparams.conv_num_channels),
+                        in_channels=(conv_num_input_dims
+                                     if i == 0 else conv_num_output_dims),
                         out_channels=self._hparams.conv_num_channels,
                         kernel_size=size)
                     batch_norm = nn.BatchNorm1d(
@@ -158,18 +218,33 @@ class Sdqc:
                         {'conv': conv, 'batch_norm': batch_norm})
                 self._conv_layers.append(layer)
 
+            # -- dense layers --------------------------------------------------
+            if self._hparams.conv_num_layers:
+                dense_num_input_dims = \
+                    conv_num_output_dims + self._hparams.input_num_aux_dims
+            else:
+                dense_num_input_dims = \
+                    emb_num_output_dims + self._hparams.input_num_aux_dims
+            dense_num_output_dims = self._hparams.dense_num_hidden
             self._dense_layers = nn.ModuleList()
             for i in range(self._hparams.dense_num_layers):
                 self._dense_layers.append(nn.Linear(
-                    in_features=((len(self._hparams.conv_kernel_sizes)
-                                  * self._hparams.conv_num_channels)
-                                 + self._hparams.input_num_auxiliary_dimensions
-                                 if i == 0 else self._hparams.dense_num_hidden),
+                    in_features=(dense_num_input_dims
+                                 if i == 0 else dense_num_output_dims),
                     out_features=self._hparams.dense_num_hidden
                 ))
 
+            # -- linear layer --------------------------------------------------
+            if self._hparams.dense_num_layers:
+                linear_num_input_dims = dense_num_output_dims
+            elif self._hparams.conv_num_layers:
+                linear_num_input_dims = \
+                    conv_num_output_dims + self._hparams.input_num_aux_dims
+            else:
+                linear_num_input_dims = \
+                    emb_num_output_dims + self._hparams.input_num_aux_dims
             self._linear = nn.Linear(
-                in_features=self._hparams.dense_num_hidden,
+                in_features=linear_num_input_dims,
                 out_features=len(SdqcInstance.Label))
 
             # num_total_params = 0
@@ -179,8 +254,8 @@ class Sdqc:
             #         num_total_params += w.numel()
             # print('Num Total Parameters: {}'.format(num_total_params))
 
-        def forward(self, embedding, auxiliary):
-            x = embedding
+        def forward(self, emb, aux):
+            x = emb
 
             for layer in self._conv_layers:
                 h = []
@@ -196,8 +271,8 @@ class Sdqc:
             x = F.avg_pool1d(x, kernel_size=self._hparams.max_sentence_length)
             x.squeeze_(dim=2)
 
-            if self._hparams.input_num_auxiliary_dimensions:
-                x = torch.cat((x, auxiliary), dim=1)
+            if self._hparams.input_num_aux_dims:
+                x = torch.cat((x, aux), dim=1)
 
             for dense in self._dense_layers:
                 x = F.dropout(F.relu(dense(x)),
@@ -212,7 +287,9 @@ class Sdqc:
         print('Training SDQC model...')
         self.model = self.Model(self._hparams).to(self._device)
 
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(
+            weight=torch.tensor(self._hparams.class_weights,
+                                device=self._device))
         optimizer = optim.Adam(
             self.model.parameters(), lr=self._hparams.learning_rate)
 
@@ -231,8 +308,8 @@ class Sdqc:
                     optimizer.zero_grad()
 
                     self.model.train()
-                    batch_logits = self.model(batch['embedding'],
-                                              batch['auxiliary'])
+                    batch_logits = self.model(batch['emb'],
+                                              batch['aux'])
                     with torch.no_grad():
                         batch_prediction = torch.argmax(batch_logits, dim=1)
 
@@ -280,8 +357,8 @@ class Sdqc:
             data_loader = DataLoader(data, batch_size=self._hparams.batch_size)
             for batch_no, batch in enumerate(data_loader):
                 self.model.eval()
-                batch_logits = self.model(batch['embedding'],
-                                          batch['auxiliary'])
+                batch_logits = self.model(batch['emb'],
+                                          batch['aux'])
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
                 post_ids.append(batch['post_id'])
