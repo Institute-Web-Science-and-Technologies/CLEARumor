@@ -433,7 +433,7 @@ class SdqcInstance:
         query = 2
         comment = 3
 
-    def __init__(self, post_id: str, label: Label):
+    def __init__(self, post_id: str, label: Optional[Label]):
         self.post_id = post_id
         self.label = label
 
@@ -486,7 +486,7 @@ class VerifInstance:
         true = 1
         unverified = 2
 
-    def __init__(self, post_id: str, label: Label):
+    def __init__(self, post_id: str, label: Optional[Label]):
         self.post_id = post_id
         self.label = label
 

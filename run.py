@@ -62,7 +62,8 @@ sdqc_hparams = Sdqc.Hyperparameters(
     dense_num_hidden=128,
     dense_dropout=0.5)
 sdqc = Sdqc(posts, post_embeddings, sdqc_hparams, device)
-sdqc_results = sdqc.train()
+sdqc.train()
+sdqc_estimates = sdqc.predict(posts.keys())
 
 verif_hparams = Verif.Hyperparameters(
     max_sentence_length=32, batch_size=256, num_epochs=10, learning_rate=0.01)

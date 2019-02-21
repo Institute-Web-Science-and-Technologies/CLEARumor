@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.__init__ import OrderedDict
 from enum import Enum
-from itertools import chain
 from time import time
-from typing import Dict, List
+from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import torch
@@ -85,7 +83,7 @@ class Sdqc:
 
     class Dataset(torch.utils.data.Dataset):
         def __init__(self,
-                     instances: List[SdqcInstance],
+                     instances: Iterable[SdqcInstance],
                      posts: Dict[str, Post],
                      post_embeddings: Dict[str, torch.Tensor],
                      hparams: 'Sdqc.Hyperparameters',
@@ -132,7 +130,8 @@ class Sdqc:
                     'post_id': post.id,
                     'emb': post_embedding,
                     'aux': torch.from_numpy(post_aux).to(device),
-                    'label': torch.tensor(instance.label.value, device=device),
+                    'label': (torch.tensor(instance.label.value, device=device)
+                              if instance.label else 0),
                 })
 
         def __len__(self) -> int:
@@ -297,7 +296,7 @@ class Sdqc:
 
             return logits
 
-    def train(self) -> Dict[str, str]:
+    def train(self) -> None:
         print('Training SDQC model...')
         self.model = self.Model(self._hparams).to(self._device)
 
@@ -322,8 +321,7 @@ class Sdqc:
                     optimizer.zero_grad()
 
                     self.model.train()
-                    batch_logits = self.model(batch['emb'],
-                                              batch['aux'])
+                    batch_logits = self.model(batch['emb'], batch['aux'])
                     with torch.no_grad():
                         batch_prediction = torch.argmax(batch_logits, dim=1)
 
@@ -353,29 +351,25 @@ class Sdqc:
 
             if (epoch_no == self._hparams.num_epochs
                     or not epoch_no % EVAL_DEV_EVERY_N_EPOCH):
-                dev_acc, dev_f1, _ = self.eval(self._dev_data)
+                dev_acc, dev_f1 = self.eval(self._dev_data)
                 print('  Validation:    Accuracy={:.2%}  F1-score={:.2%}'
                       .format(dev_acc, dev_f1))
 
-        test_acc, test_f1, test_results = self.eval(self._test_data)
+        test_acc, test_f1 = self.eval(self._test_data)
         print('Test:            Accuracy={:.2%}  F1-score={:.2%}'
               .format(test_acc, test_f1))
 
-        return test_results
-
-    def eval(self, data: 'Sdqc.Dataset') \
-            -> (float, float, Dict[str, str]):
-        post_ids, labels, predictions = [], [], []
+    def eval(self, dataset: 'Sdqc.Dataset') -> (float, float):
+        labels, predictions = [], []
 
         with torch.no_grad():
-            data_loader = DataLoader(data, batch_size=self._hparams.batch_size)
+            data_loader = DataLoader(dataset,
+                                     batch_size=self._hparams.batch_size)
             for batch_no, batch in enumerate(data_loader):
                 self.model.eval()
-                batch_logits = self.model(batch['emb'],
-                                          batch['aux'])
+                batch_logits = self.model(batch['emb'], batch['aux'])
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
-                post_ids.append(batch['post_id'])
                 labels.append(batch['label'].data.cpu().numpy())
                 predictions.append(batch_prediction.data.cpu().numpy())
 
@@ -385,9 +379,28 @@ class Sdqc:
         acc = accuracy_score(labels, predictions)
         f1 = f1_score(labels, predictions, average='macro')
 
-        results = OrderedDict()
-        for post_id, prediction in zip(chain.from_iterable(post_ids),
-                                       predictions):
-            results[post_id] = SdqcInstance.Label(prediction).name
+        return acc, f1
 
-        return acc, f1, results
+    def predict(self, post_ids: Iterable[str]) \
+            -> Dict[str, Tuple[SdqcInstance.Label,
+                               Dict[SdqcInstance.Label, float]]]:
+        instances = [SdqcInstance(post_id, None) for post_id in post_ids]
+        dataset = self.Dataset(instances, self._posts, self._post_embeddings,
+                               self._hparams, self._device)
+
+        results = {}
+        with torch.no_grad():
+            data_loader = DataLoader(dataset,
+                                     batch_size=self._hparams.batch_size)
+            for batch_no, batch in enumerate(data_loader):
+                self.model.eval()
+                batch_logits = self.model(batch['emb'], batch['aux'])
+                batch_prediction = torch.argmax(batch_logits, dim=1)
+
+                for post_id, prediction, logits in zip(
+                        batch['post_id'], batch_prediction, batch_logits):
+                    results[post_id] = \
+                        (SdqcInstance.Label(prediction.item()),
+                         dict(zip(SdqcInstance.Label, logits.tolist())))
+
+        return results

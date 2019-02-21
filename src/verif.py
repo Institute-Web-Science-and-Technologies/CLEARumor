@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from time import time
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
 import torch
 
@@ -34,7 +34,7 @@ class Verif:
 
     class Dataset(torch.utils.data.Dataset):
         def __init__(self,
-                     instances: List[VerifInstance],
+                     instances: Iterable[VerifInstance],
                      posts: Dict[str, Post],
                      post_embeddings: Dict[str, torch.Tensor],
                      hparams: 'Verif.Hyperparameters',
@@ -45,7 +45,8 @@ class Verif:
                 self._dataset.append({
                     'post_id': post.id,
                     'emb': post_embeddings[post.id],
-                    'label': torch.tensor(instance.label.value, device=device),
+                    'label': (torch.tensor(instance.label.value, device=device)
+                              if instance.label else 0),
                 })
 
         def __len__(self) -> int:
