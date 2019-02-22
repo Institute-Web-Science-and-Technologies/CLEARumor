@@ -12,13 +12,109 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from enum import Enum
+from math import sqrt
 from time import time
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 from allennlp.modules.elmo import Elmo, batch_to_ids
+from torch.utils.data import Dataset
 
-from src.dataset import ELMO_OPTIONS_FILE, ELMO_WEIGHTS_FILE, Post
+from src.dataset import ELMO_OPTIONS_FILE, ELMO_WEIGHTS_FILE, Post, \
+    VerifInstance
+
+
+class ScalingMode(Enum):
+    none = 0
+    min_max = 1
+    standard = 2
+
+
+class DatasetHelper(Dataset):
+    def __init__(self, post_embeddings: Dict[str, torch.tensor]):
+        super().__init__()
+        self._dataset = []
+        self._post_embeddings = post_embeddings
+
+    def calc_shared_features(self, post: Post) \
+            -> (np.ndarray, np.ndarray, np.ndarray):
+        post_platform = [post.platform == Post.Platform.twitter,
+                         post.platform == Post.Platform.reddit]
+
+        post_author = [0, 1, 0, 0, 1]
+        if post.platform == Post.Platform.twitter:
+            post_author = [post.user_verified,
+                           not post.user_verified,
+                           post.followers_count,
+                           post.friends_count,
+                           post.followers_count / (post.friends_count + 1e-8)]
+
+        post_similarity_to_source = np.array(1)
+        if not post.has_source_depth:
+            post_emb_mean = self._post_embeddings[post.id].mean(dim=1)
+            source_emb_mean = self._post_embeddings[post.source_id].mean(dim=1)
+            post_similarity_to_source = F.cosine_similarity(
+                post_emb_mean, source_emb_mean, dim=0).cpu().numpy()
+
+        return post_platform, post_author, post_similarity_to_source
+
+    def __len__(self) -> int:
+        return len(self._dataset)
+
+    def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
+        return self._dataset[index]
+
+    def calc_stats_for_aux_feature(self,
+                                   index: int,
+                                   filter_func: Optional[
+                                       Callable[[str], bool]] = None) \
+            -> (float, float, float, float):
+        if not filter_func:
+            def filter_func(_post_id: str) -> bool:
+                return True
+
+        feature_values = np.array([post['features'][index].item()
+                                   for post in self._dataset
+                                   if filter_func(post['post_id'])])
+        return (feature_values.min(),
+                feature_values.max(),
+                feature_values.mean(),
+                feature_values.std())
+
+    def min_max_scale_aux_feature(self,
+                                  index: int,
+                                  min: float,
+                                  max: float,
+                                  filter_func: Optional[
+                                      Callable[[str], bool]] = None) \
+            -> None:
+        if not filter_func:
+            def filter_func(_post_id: str) -> bool:
+                return True
+
+        for post in self._dataset:
+            if filter_func(post['post_id']):
+                value = post['features'][index]
+                post['features'][index] = (value - min) / (max - min)
+
+    def standard_scale_aux_feature(self,
+                                   index: int,
+                                   mean: float,
+                                   std: float,
+                                   filter_func: Optional[
+                                       Callable[[str], bool]] = None) \
+            -> None:
+        if not filter_func:
+            def filter_func(_post_id: str) -> bool:
+                return True
+
+        for post in self._dataset:
+            if filter_func(post['post_id']):
+                value = post['features'][index]
+                post['features'][index] = (value - mean) / std
 
 
 def calculate_post_elmo_embeddings(posts: Dict[str, Post],
@@ -99,3 +195,19 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
     print('  Took {:.2f}s.'.format(time_after - time_before))
 
     return post_embeddings
+
+
+def rmse_score(labels, predictions, confidences):
+    rmse = 0
+    for label, prediction, confidence in \
+            zip(labels, predictions, confidences):
+        if label == prediction and \
+                (label == VerifInstance.Label.true.value
+                 or label == VerifInstance.Label.false.value):
+            rmse += (1 - confidence) ** 2
+        elif label == VerifInstance.Label.unverified.value:
+            rmse += confidence ** 2
+        else:
+            rmse += 1
+    rmse = sqrt(rmse / len(labels))
+    return rmse

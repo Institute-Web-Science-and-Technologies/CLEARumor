@@ -12,9 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
 from time import time
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 import torch
@@ -25,17 +24,13 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.dataset import Post, SdqcInstance, load_sdcq_instances
+from src.util import DatasetHelper, ScalingMode
 
 EVAL_DEV_EVERY_N_EPOCH = 5
 
 
 class Sdqc:
     class Hyperparameters:
-        class ScalingMode(Enum):
-            none = 0
-            min_max = 1
-            standard = 2
-
         def __init__(self,
                      max_sentence_length: int,
                      batch_size: int,
@@ -81,113 +76,39 @@ class Sdqc:
 
         self._load_data()
 
-    class Dataset(torch.utils.data.Dataset):
+    class Dataset(DatasetHelper):
         def __init__(self,
                      instances: Iterable[SdqcInstance],
                      posts: Dict[str, Post],
                      post_embeddings: Dict[str, torch.Tensor],
                      hparams: 'Sdqc.Hyperparameters',
                      device: torch.device):
-            self._dataset: List[Dict[str, torch.Tensor]] = []
+            super().__init__(post_embeddings)
+
             for instance in instances:
                 post = posts[instance.post_id]
                 post_embedding = post_embeddings[post.id]
 
-                post_type = np.array(
-                    [post.has_source_depth,
-                     post.has_reply_depth,
-                     post.has_nested_depth])
+                post_platform, post_author, post_similarity_to_source = \
+                    self.calc_shared_features(post)
 
-                post_platform = np.array(
-                    [post.platform == Post.Platform.twitter,
-                     post.platform == Post.Platform.reddit])
+                post_type = [post.has_source_depth,
+                             post.has_reply_depth,
+                             post.has_nested_depth]
 
-                post_author = np.array([0, 1, 0, 0, 1], dtype=np.float)
-                if post.platform == Post.Platform.twitter:
-                    post_author = np.array(
-                        [post.user_verified,
-                         not post.user_verified,
-                         post.followers_count,
-                         post.friends_count,
-                         post.followers_count / (post.friends_count + 1e-8)])
-
-                post_similarity_to_source = 1
-                if not post.has_source_depth:
-                    post_embedding_mean = post_embedding.mean(dim=1)
-                    source_embedding_mean = \
-                        post_embeddings[post.source_id].mean(dim=1)
-                    post_similarity_to_source = F.cosine_similarity(
-                        post_embedding_mean, source_embedding_mean,
-                        dim=0).item()
-
-                post_aux = (np.concatenate((post_type,
-                                            post_platform,
-                                            post_author,
-                                            [post_similarity_to_source]))
-                            .astype(np.float32))
+                post_features = (np.concatenate((post_platform,
+                                                 post_author,
+                                                 [post_similarity_to_source],
+                                                 post_type))
+                                 .astype(np.float32))
 
                 self._dataset.append({
                     'post_id': post.id,
                     'emb': post_embedding,
-                    'aux': torch.from_numpy(post_aux).to(device),
+                    'features': torch.from_numpy(post_features).to(device),
                     'label': (torch.tensor(instance.label.value, device=device)
                               if instance.label else 0),
                 })
-
-        def __len__(self) -> int:
-            return len(self._dataset)
-
-        def __getitem__(self, index: int) -> Dict[str, torch.Tensor]:
-            return self._dataset[index]
-
-        def calc_stats_for_aux_feature(self,
-                                       index: int,
-                                       filter_func: Optional[
-                                           Callable[[str], bool]] = None) \
-                -> (float, float, float, float):
-            if not filter_func:
-                def filter_func(_post_id: str) -> bool:
-                    return True
-
-            feature_values = np.array([post['aux'][index].item()
-                                       for post in self._dataset
-                                       if filter_func(post['post_id'])])
-            return (feature_values.min(),
-                    feature_values.max(),
-                    feature_values.mean(),
-                    feature_values.std())
-
-        def min_max_scale_aux_feature(self,
-                                      index: int,
-                                      min: float,
-                                      max: float,
-                                      filter_func: Optional[
-                                          Callable[[str], bool]] = None) \
-                -> None:
-            if not filter_func:
-                def filter_func(_post_id: str) -> bool:
-                    return True
-
-            for post in self._dataset:
-                if filter_func(post['post_id']):
-                    value = post['aux'][index]
-                    post['aux'][index] = (value - min) / (max - min)
-
-        def standard_scale_aux_feature(self,
-                                       index: int,
-                                       mean: float,
-                                       std: float,
-                                       filter_func: Optional[
-                                           Callable[[str], bool]] = None) \
-                -> None:
-            if not filter_func:
-                def filter_func(_post_id: str) -> bool:
-                    return True
-
-            for post in self._dataset:
-                if filter_func(post['post_id']):
-                    value = post['aux'][index]
-                    post['aux'][index] = (value - mean) / std
 
     def _load_data(self):
         print()
@@ -213,18 +134,15 @@ class Sdqc:
         for index in self._hparams.input_aux_scaling_features:
             min, max, mean, std = \
                 self._train_data.calc_stats_for_aux_feature(index, filter_func)
-            print(min, max, mean, std)
-            if self._hparams.input_aux_scaling_mode \
-                    == self._hparams.ScalingMode.none:
+
+            if self._hparams.input_aux_scaling_mode == ScalingMode.none:
                 pass
-            elif self._hparams.input_aux_scaling_mode \
-                    == self._hparams.ScalingMode.min_max:
+            elif self._hparams.input_aux_scaling_mode == ScalingMode.min_max:
                 args = [index, min, max, filter_func]
                 self._train_data.min_max_scale_aux_feature(*args)
                 self._dev_data.min_max_scale_aux_feature(*args)
                 self._test_data.min_max_scale_aux_feature(*args)
-            elif self._hparams.input_aux_scaling_mode \
-                    == self._hparams.ScalingMode.standard:
+            elif self._hparams.input_aux_scaling_mode == ScalingMode.standard:
                 args = [index, mean, std, filter_func]
                 self._train_data.standard_scale_aux_feature(*args)
                 self._dev_data.standard_scale_aux_feature(*args)
@@ -274,8 +192,7 @@ class Sdqc:
                 self._dense_layers.append(nn.Linear(
                     in_features=(dense_num_input_dims
                                  if i == 0 else dense_num_output_dims),
-                    out_features=self._hparams.dense_num_hidden
-                ))
+                    out_features=self._hparams.dense_num_hidden))
 
             # -- linear layer --------------------------------------------------
             if self._hparams.dense_num_layers:
@@ -332,6 +249,7 @@ class Sdqc:
 
         criterion = nn.CrossEntropyLoss(
             weight=torch.tensor(self._hparams.class_weights,
+                                dtype=torch.float32,
                                 device=self._device))
         optimizer = optim.Adam(
             self.model.parameters(), lr=self._hparams.learning_rate)
@@ -351,7 +269,7 @@ class Sdqc:
                     optimizer.zero_grad()
 
                     self.model.train()
-                    batch_logits = self.model(batch['emb'], batch['aux'])
+                    batch_logits = self.model(batch['emb'], batch['features'])
                     with torch.no_grad():
                         batch_prediction = torch.argmax(batch_logits, dim=1)
 
@@ -395,9 +313,9 @@ class Sdqc:
         with torch.no_grad():
             data_loader = DataLoader(dataset,
                                      batch_size=self._hparams.batch_size)
-            for batch_no, batch in enumerate(data_loader):
+            for batch in data_loader:
                 self.model.eval()
-                batch_logits = self.model(batch['emb'], batch['aux'])
+                batch_logits = self.model(batch['emb'], batch['features'])
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
                 labels.append(batch['label'].data.cpu().numpy())
@@ -422,15 +340,16 @@ class Sdqc:
         with torch.no_grad():
             data_loader = DataLoader(dataset,
                                      batch_size=self._hparams.batch_size)
-            for batch_no, batch in enumerate(data_loader):
+            for batch in data_loader:
                 self.model.eval()
-                batch_logits = self.model(batch['emb'], batch['aux'])
+                batch_logits = self.model(batch['emb'], batch['features'])
+                batch_probs = F.softmax(batch_logits, dim=1)
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
-                for post_id, prediction, logits in zip(
-                        batch['post_id'], batch_prediction, batch_logits):
+                for post_id, prediction, probs in zip(
+                        batch['post_id'], batch_prediction, batch_probs):
                     results[post_id] = \
                         (SdqcInstance.Label(prediction.item()),
-                         dict(zip(SdqcInstance.Label, logits.tolist())))
+                         dict(zip(SdqcInstance.Label, probs.tolist())))
 
         return results
