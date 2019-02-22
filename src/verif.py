@@ -35,6 +35,7 @@ class Verif:
                      batch_size: int,
                      num_epochs: int,
                      learning_rate: float,
+                     weight_decay: float,
                      class_weights: List[float],
                      input_num_dims: int,
                      input_scaling_features: List[int],
@@ -45,6 +46,7 @@ class Verif:
             self.batch_size = batch_size
             self.num_epochs = num_epochs
             self.learning_rate = learning_rate
+            self.weight_decay = weight_decay
             self.class_weights = class_weights
             self.input_num_dims = input_num_dims
             self.input_scaling_features = input_scaling_features
@@ -232,8 +234,9 @@ class Verif:
             weight=torch.tensor(self._hparams.class_weights,
                                 dtype=torch.float32,
                                 device=self._device))
-        optimizer = optim.Adam(
-            self.model.parameters(), lr=self._hparams.learning_rate)
+        optimizer = optim.Adam(self.model.parameters(),
+                               lr=self._hparams.learning_rate,
+                               weight_decay=self._hparams.weight_decay)
 
         train_loader = DataLoader(
             self._train_data, batch_size=self._hparams.batch_size, shuffle=True)

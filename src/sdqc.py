@@ -36,6 +36,7 @@ class Sdqc:
                      batch_size: int,
                      num_epochs: int,
                      learning_rate: float,
+                     weight_decay: float,
                      class_weights: List[float],
                      input_num_emb_dims: int,
                      input_num_aux_dims: int,
@@ -51,6 +52,7 @@ class Sdqc:
             self.batch_size = batch_size
             self.num_epochs = num_epochs
             self.learning_rate = learning_rate
+            self.weight_decay = weight_decay
             self.class_weights = class_weights
             self.input_num_emb_dims = input_num_emb_dims
             self.input_num_aux_dims = input_num_aux_dims
@@ -251,8 +253,9 @@ class Sdqc:
             weight=torch.tensor(self._hparams.class_weights,
                                 dtype=torch.float32,
                                 device=self._device))
-        optimizer = optim.Adam(
-            self.model.parameters(), lr=self._hparams.learning_rate)
+        optimizer = optim.Adam(self.model.parameters(),
+                               lr=self._hparams.learning_rate,
+                               weight_decay=self._hparams.weight_decay)
 
         train_loader = DataLoader(
             self._train_data, batch_size=self._hparams.batch_size, shuffle=True)
