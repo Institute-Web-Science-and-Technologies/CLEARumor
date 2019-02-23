@@ -19,6 +19,7 @@ from pathlib import Path
 from time import time
 from warnings import filterwarnings
 
+import numpy as np
 import torch
 from sklearn.exceptions import UndefinedMetricWarning
 
@@ -37,8 +38,9 @@ torch.backends.cudnn.fastest = True
 
 filterwarnings('ignore', category=UndefinedMetricWarning)
 
-NUM_REPETITIONS = 10
-NUM_FOLDS = 10
+NUM_ORGA_REPETITIONS = 10
+NUM_CV_REPETITIONS = 1
+NUM_CV_FOLDS = 10
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # device = torch.device('cpu')
@@ -96,6 +98,7 @@ verif_train_instances, verif_dev_instances, verif_test_instances = \
 verif_all_instances = list(chain(
     verif_train_instances, verif_dev_instances, verif_test_instances))
 
+sdqc_times, verif_times = [], []
 sdqc_dev_accs, sdqc_dev_f1s, sdqc_dev_reports = [], [], []
 sdqc_test_accs, sdqc_test_f1s, sdqc_test_reports = [], [], []
 sdqc_cv_accs, sdqc_cv_f1s, sdqc_cv_reports = [], [], []
@@ -111,11 +114,12 @@ answers_dir.mkdir(parents=True, exist_ok=False)
 print()
 print('-- Organizer Split ----------------------------------------------------')
 
-for repetition_no in range(NUM_REPETITIONS):
+for repetition_no in range(NUM_ORGA_REPETITIONS):
     print()
-    print('## Repetition {}/{}'.format(repetition_no + 1, NUM_REPETITIONS))
+    print('## Repetition {}/{}'.format(repetition_no + 1, NUM_ORGA_REPETITIONS))
 
     print('Task A: SDQC')
+    t1 = time()
     sdqc_train_dataset, sdqc_dev_dataset, sdqc_test_dataset = \
         sdqc.build_datasets(sdqc_train_instances,
                             sdqc_dev_instances,
@@ -123,6 +127,9 @@ for repetition_no in range(NUM_REPETITIONS):
     sdqc_model = sdqc.train(sdqc_train_dataset,
                             sdqc_dev_dataset,
                             print_progress=False)
+    t2 = time()
+    sdqc_times.append(t2 - t1)
+
     sdqc_estimates = sdqc.predict(sdqc_model, posts.keys())
     if sdqc_dev_dataset:
         acc, f1, report = sdqc.eval(sdqc_model, sdqc_dev_dataset)
@@ -138,6 +145,7 @@ for repetition_no in range(NUM_REPETITIONS):
         sdqc_test_reports.append(report)
 
     print('Task B: Verification')
+    t1 = time()
     verif_train_dataset, verif_dev_dataset, verif_test_dataset = \
         verif.build_datasets(verif_train_instances,
                              verif_dev_instances,
@@ -146,6 +154,9 @@ for repetition_no in range(NUM_REPETITIONS):
     verif_model = verif.train(verif_train_dataset,
                               verif_dev_dataset,
                               print_progress=False)
+    t2 = time()
+    verif_times.append(t2 - t1)
+
     verif_estimates = verif.predict(
         verif_model,
         [post.id for post in posts.values() if post.has_source_depth],
@@ -188,14 +199,14 @@ for repetition_no in range(NUM_REPETITIONS):
 print()
 print('-- k-fold Cross Validation --------------------------------------------')
 
-for repetition_no in range(NUM_REPETITIONS):
+for repetition_no in range(NUM_CV_REPETITIONS):
     print()
-    print('## Repetition {}/{}'.format(repetition_no + 1, NUM_REPETITIONS))
+    print('## Repetition {}/{}'.format(repetition_no + 1, NUM_CV_REPETITIONS))
 
-    folds = generate_folds_for_k_fold_cross_validation(posts, NUM_FOLDS)
-    for i in range(NUM_FOLDS):
+    folds = generate_folds_for_k_fold_cross_validation(posts, NUM_CV_FOLDS)
+    for i in range(NUM_CV_FOLDS):
         print()
-        print('# Cross Validation {}/{}'.format(i + 1, NUM_FOLDS))
+        print('# Cross Validation {}/{}'.format(i + 1, NUM_CV_FOLDS))
 
         train_post_ids, test_post_ids = \
             arrange_folds_for_k_fold_cross_validation(folds, i)
@@ -266,5 +277,11 @@ display_results(
     sdqc_cv_accs, sdqc_cv_f1s, sdqc_cv_reports,
     verif_cv_accs, verif_cv_f1s, verif_cv_rmses, verif_cv_reports)
 
+print()
+print('# Runtime')
+print('SDQC:  {:.2}±{:.2}s'.format(np.mean(sdqc_times), np.std(sdqc_times)))
+print('Verif: {:.2}±{:.2}s'.format(np.mean(verif_times), np.std(verif_times)))
+
+print()
 time_after = time()
 print('Program ran for {:.2f}s in total'.format(time_after - time_before))

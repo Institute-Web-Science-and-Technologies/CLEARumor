@@ -39,10 +39,10 @@ ELMO_WEIGHTS_FILE = (EXTERNAL_DATA_DIR
                      / 'elmo_2x4096_512_2048cnn_2xhighway_5.5B_weights.hdf5')
 ELMO_OPTIONS_FILE = (EXTERNAL_DATA_DIR
                      / 'elmo_2x4096_512_2048cnn_2xhighway_5.5B_options.json')
-ELMO_WEIGHTS_FILE = (EXTERNAL_DATA_DIR
-                     / 'elmo_2x1024_128_2048cnn_1xhighway_weights.hdf5')
-ELMO_OPTIONS_FILE = (EXTERNAL_DATA_DIR
-                     / 'elmo_2x1024_128_2048cnn_1xhighway_options.json')
+# ELMO_WEIGHTS_FILE = (EXTERNAL_DATA_DIR
+#                      / 'elmo_2x1024_128_2048cnn_1xhighway_weights.hdf5')
+# ELMO_OPTIONS_FILE = (EXTERNAL_DATA_DIR
+#                      / 'elmo_2x1024_128_2048cnn_1xhighway_options.json')
 TRAINING_DATA_ARCHIVE_FILE = (EXTERNAL_DATA_DIR
                               / 'rumoureval-2019-training-data.zip')
 TEST_DATA_ARCHIVE_FILE = (EXTERNAL_DATA_DIR
