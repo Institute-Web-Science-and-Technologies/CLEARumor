@@ -12,20 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from itertools import chain
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, classification_report, f1_score
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dataset import Post, SdqcInstance, load_sdcq_instances
-from src.util import DatasetHelper, ScalingMode, \
-    generate_folds_for_k_fold_cross_validation_helper
+from src.dataset import Post, SdqcInstance
+from src.util import DatasetHelper, ScalingMode
 
 EVAL_DEV_EVERY_N_EPOCH = 20
 
@@ -110,7 +108,7 @@ class Sdqc:
                               if instance.label else 0),
                 })
 
-    def _load_datasets(self,
+    def build_datasets(self,
                        train_instances: Iterable[SdqcInstance],
                        dev_instances: Optional[Iterable[SdqcInstance]],
                        test_instances: Optional[Iterable[SdqcInstance]]) \
@@ -163,31 +161,6 @@ class Sdqc:
                     raise ValueError('Unimplemented enum variant.')
 
         return train_dataset, dev_dataset, test_dataset
-
-    def load_organizer_split(self) -> ('Sdqc.Dataset',
-                                       'Sdqc.Dataset',
-                                       Optional['Sdqc.Dataset']):
-        train_instances, dev_instances, test_instances = load_sdcq_instances()
-        return self._load_datasets(
-            train_instances, dev_instances, test_instances)
-
-    def generate_folds_for_k_fold_cross_validation(self, num_folds: int) \
-            -> List[List[SdqcInstance]]:
-        train_instances, dev_instances, test_instances = load_sdcq_instances()
-        return generate_folds_for_k_fold_cross_validation_helper(
-            num_folds, self._posts, train_instances, dev_instances,
-            test_instances)
-
-    def arrange_folds_for_k_fold_cross_validation(
-            self, folds: List[List[SdqcInstance]], index: int) \
-            -> ('Sdqc.Dataset', 'Sdqc.Dataset'):
-        train_instances = list(chain.from_iterable(
-            fold for i, fold in enumerate(folds) if i != index))
-        test_instances = folds[index]
-
-        train_dataset, _, test_dataset = \
-            self._load_datasets(train_instances, None, test_instances)
-        return train_dataset, test_dataset
 
     class Model(nn.Module):
         def __init__(self, hparams: 'Sdqc.Hyperparameters'):
@@ -346,14 +319,14 @@ class Sdqc:
             if print_progress and dev_dataset and \
                     (epoch_no == self._hparams.num_epochs
                      or not epoch_no % EVAL_DEV_EVERY_N_EPOCH):
-                dev_acc, dev_f1 = self.eval(model, dev_dataset)
+                dev_acc, dev_f1, _ = self.eval(model, dev_dataset)
                 print('  Validation:    Accuracy={:.2%}  F1-score={:.2%}'
                       .format(dev_acc, dev_f1))
 
         return model
 
     def eval(self, model: 'Sdqc.Model', dataset: 'Sdqc.Dataset') \
-            -> (float, float):
+            -> (float, float, Dict[str, Dict[str, float]]):
         labels, predictions = [], []
 
         with torch.no_grad():
@@ -372,8 +345,12 @@ class Sdqc:
 
         acc = accuracy_score(labels, predictions)
         f1 = f1_score(labels, predictions, average='macro')
+        report = classification_report(
+            labels, predictions, output_dict=True,
+            labels=range(len(SdqcInstance.Label)),
+            target_names=[label.name for label in SdqcInstance.Label])
 
-        return acc, f1
+        return acc, f1, report
 
     def predict(self, model: 'Sdqc.Model', post_ids: Iterable[str]) \
             -> Dict[str, Tuple[SdqcInstance.Label,

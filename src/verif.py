@@ -12,20 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from itertools import chain
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, classification_report, f1_score
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from src.dataset import Post, SdqcInstance, VerifInstance, load_verif_instances
+from src.dataset import Post, SdqcInstance, VerifInstance
 from src.util import DatasetHelper, ScalingMode, \
-    generate_folds_for_k_fold_cross_validation_helper, rmse_score
+    rmse_score
 
 EVAL_DEV_EVERY_N_EPOCH = 20
 
@@ -59,14 +58,10 @@ class Verif:
     def __init__(self,
                  posts: Dict[str, Post],
                  post_embeddings: Dict[str, torch.Tensor],
-                 sdqc_estimates: Dict[str, Tuple[SdqcInstance.Label,
-                                                 Dict[SdqcInstance.Label,
-                                                      float]]],
                  hparams: 'Verif.Hyperparameters',
                  device: torch.device):
         self._posts = posts
         self._post_embeddings = post_embeddings
-        self._sdqc_estimates = sdqc_estimates
         self._hparams = hparams
         self._device = device
 
@@ -145,33 +140,36 @@ class Verif:
                               if instance.label else 0),
                 })
 
-    def _load_datasets(self,
+    def build_datasets(self,
                        train_instances: Iterable[VerifInstance],
                        dev_instances: Optional[Iterable[VerifInstance]],
-                       test_instances: Optional[Iterable[VerifInstance]]) \
+                       test_instances: Optional[Iterable[VerifInstance]],
+                       sdqc_estimates: Dict[str, Tuple[SdqcInstance.Label,
+                                                       Dict[SdqcInstance.Label,
+                                                            float]]]) \
             -> ('Verif.Dataset',
                 Optional['Verif.Dataset'],
                 Optional['Verif.Dataset']):
-        print('  Number of instances: train={:d}, dev={:d}, test={:d}'
+        print('Number of instances: train={:d}, dev={:d}, test={:d}'
               .format(len(train_instances),
                       len(dev_instances or []),
                       len(test_instances or [])))
 
         train_dataset = self.Dataset(
             train_instances, self._posts, self._post_embeddings,
-            self._sdqc_estimates, self._hparams, self._device)
+            sdqc_estimates, self._hparams, self._device)
 
         dev_dataset = None
         if dev_instances:
             dev_dataset = self.Dataset(
                 dev_instances, self._posts, self._post_embeddings,
-                self._sdqc_estimates, self._hparams, self._device)
+                sdqc_estimates, self._hparams, self._device)
 
         test_dataset = None
         if test_instances:
             test_dataset = self.Dataset(
                 test_instances, self._posts, self._post_embeddings,
-                self._sdqc_estimates, self._hparams, self._device)
+                sdqc_estimates, self._hparams, self._device)
 
         def filter_func(post_id: str) -> bool:
             return self._posts[post_id].platform == Post.Platform.twitter
@@ -196,31 +194,6 @@ class Verif:
                     raise ValueError('Unimplemented enum variant.')
 
         return train_dataset, dev_dataset, test_dataset
-
-    def load_organizer_split(self) -> ('Verif.Dataset',
-                                       'Verif.Dataset',
-                                       Optional['Verif.Dataset']):
-        train_instances, dev_instances, test_instances = load_verif_instances()
-        return self._load_datasets(
-            train_instances, dev_instances, test_instances)
-
-    def generate_folds_for_k_fold_cross_validation(self, num_folds: int) \
-            -> List[List[VerifInstance]]:
-        train_instances, dev_instances, test_instances = load_verif_instances()
-        return generate_folds_for_k_fold_cross_validation_helper(
-            num_folds, self._posts, train_instances, dev_instances,
-            test_instances)
-
-    def arrange_folds_for_k_fold_cross_validation(
-            self, folds: List[List[VerifInstance]], index: int) \
-            -> ('Verif.Dataset', 'Verif.Dataset'):
-        train_instances = list(chain.from_iterable(
-            fold for i, fold in enumerate(folds) if i != index))
-        test_instances = folds[index]
-
-        train_dataset, _, test_dataset = \
-            self._load_datasets(train_instances, None, test_instances)
-        return train_dataset, test_dataset
 
     class Model(nn.Module):
         def __init__(self, hparams: 'Verif.Hyperparameters'):
@@ -335,14 +308,14 @@ class Verif:
             if print_progress and dev_dataset and \
                     (epoch_no == self._hparams.num_epochs
                      or not epoch_no % EVAL_DEV_EVERY_N_EPOCH):
-                dev_acc, dev_f1, dev_rmse = self.eval(model, dev_dataset)
+                dev_acc, dev_f1, dev_rmse, _ = self.eval(model, dev_dataset)
                 print('  Validation:    Accuracy={:.2%}  F1-score={:.2%}  '
                       'RMSE={:.4f}'.format(dev_acc, dev_f1, dev_rmse))
 
         return model
 
     def eval(self, model: 'Verif.Model', dataset: 'Verif.Dataset') \
-            -> (float, float, float):
+            -> (float, float, float, Dict[str, Dict[str, float]]):
         labels, predictions, prediction_probs = [], [], []
 
         with torch.no_grad():
@@ -369,14 +342,23 @@ class Verif:
         acc = accuracy_score(labels, predictions)
         f1 = f1_score(labels, predictions, average='macro')
         rmse = rmse_score(labels, predictions, confidences)
+        report = classification_report(
+            labels, predictions, output_dict=True,
+            labels=range(len(VerifInstance.Label)),
+            target_names=[label.name for label in VerifInstance.Label])
 
-        return acc, f1, rmse
+        return acc, f1, rmse, report
 
-    def predict(self, model: 'Verif.Model', post_ids: Iterable[str]) \
+    def predict(self,
+                model: 'Verif.Model',
+                post_ids: Iterable[str],
+                sdqc_estimates: Dict[str, Tuple[SdqcInstance.Label,
+                                                Dict[SdqcInstance.Label,
+                                                     float]]]) \
             -> Dict[str, Tuple[VerifInstance.Label, float]]:
         instances = [VerifInstance(post_id) for post_id in post_ids]
         dataset = self.Dataset(
-            instances, self._posts, self._post_embeddings, self._sdqc_estimates,
+            instances, self._posts, self._post_embeddings, sdqc_estimates,
             self._hparams, self._device)
 
         results = {}

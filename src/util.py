@@ -16,10 +16,11 @@ from collections import defaultdict
 from enum import Enum
 from itertools import chain
 from math import sqrt
+from pprint import pprint
 from random import shuffle
 from sys import maxsize
 from time import time
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, Iterable, List, Optional, Set, Union
 
 import numpy as np
 import torch
@@ -201,29 +202,23 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
     return post_embeddings
 
 
-def generate_folds_for_k_fold_cross_validation_helper(
-        num_folds: int,
-        posts: Dict[str, Post],
-        train_instances: List[Union[SdqcInstance, VerifInstance]],
-        dev_instances: Optional[List[Union[SdqcInstance, VerifInstance]]],
-        test_instances: Optional[List[Union[SdqcInstance, VerifInstance]]]) \
-        -> List[List[Union[SdqcInstance, VerifInstance]]]:
-    instances_per_discriminator = defaultdict(list)
-    for instance in chain(
-            train_instances, dev_instances, test_instances or []):
-        post = posts[instance.post_id]
+def generate_folds_for_k_fold_cross_validation(posts: Dict[str, Post],
+                                               num_folds: int) \
+        -> List[Set[str]]:
+    posts_per_discriminator = defaultdict(set)
+    for post in posts.values():
         if post.platform == Post.Platform.twitter:
             discriminator = post.topic
         elif post.platform == Post.Platform.reddit:
             discriminator = post.source_id
         else:
             raise ValueError('Unimplemented enum variant.')
-        instances_per_discriminator[discriminator].append(instance)
-    instances_per_discriminator = list(instances_per_discriminator.values())
-    shuffle(instances_per_discriminator)
+        posts_per_discriminator[discriminator].add(post.id)
+    posts_per_discriminator = list(posts_per_discriminator.values())
+    shuffle(posts_per_discriminator)
 
-    folds = [[] for _ in range(num_folds)]
-    for instances in instances_per_discriminator:
+    folds = [set() for _ in range(num_folds)]
+    for post_ids in posts_per_discriminator:
         # Find fold with fewest elements
         index = None
         num_elements = maxsize
@@ -232,13 +227,33 @@ def generate_folds_for_k_fold_cross_validation_helper(
                 num_elements = len(fold)
                 index = i
 
-        # Add instances to that fold
-        folds[index].extend(instances)
-
-    for fold in folds:
-        shuffle(fold)
+        # Add post to that fold
+        folds[index].update(post_ids)
 
     return folds
+
+
+def arrange_folds_for_k_fold_cross_validation(folds: List[Set[str]],
+                                              index: int) \
+        -> (Set[str], Set[str]):
+    train_post_ids = set(chain.from_iterable(
+        fold for i, fold in enumerate(folds) if i != index))
+    test_post_ids = folds[index]
+    return train_post_ids, test_post_ids
+
+
+def filter_instances(train_post_ids: Set[str],
+                     test_post_ids: Set[str],
+                     instances: Iterable[Union[SdqcInstance, VerifInstance]]) \
+        -> (List[Union[SdqcInstance, VerifInstance]],
+            List[Union[SdqcInstance, VerifInstance]]):
+    train_instances = [i for i in instances if i.post_id in train_post_ids]
+    test_instances = [i for i in instances if i.post_id in test_post_ids]
+
+    shuffle(train_instances)
+    shuffle(test_instances)
+
+    return train_instances, test_instances
 
 
 def rmse_score(labels, predictions, confidences):
@@ -255,3 +270,48 @@ def rmse_score(labels, predictions, confidences):
             rmse += 1
     rmse = sqrt(rmse / len(labels))
     return rmse
+
+
+def display_results(sdqc_accs: Iterable[float],
+                    sdqc_f1s: Iterable[float],
+                    sdqc_reports: Iterable[Dict[str, Dict[str, float]]],
+                    verif_accs: Iterable[float],
+                    verif_f1s: Iterable[float],
+                    verif_rmses: Iterable[float],
+                    verif_reports: Iterable[Dict[str, Dict[str, float]]]):
+    def display_report(reports: Iterable[Dict[str, Dict[str, float]]]):
+        report_lists = defaultdict(lambda: defaultdict(list))
+        for report in reports:
+            for outer_key, inner_report in report.items():
+                for inner_key, value in inner_report.items():
+                    report_lists[outer_key][inner_key].append(value)
+
+        report_stats = {}
+        for outer_key, inner_report in report_lists.items():
+            report_stats[outer_key] = {}
+            for inner_key, values in inner_report.items():
+                report_stats[outer_key][inner_key] = '{:.2%}±{:.2%}'.format(
+                    np.mean(values), np.std(values))
+
+        pprint(report_stats)
+
+    sdqc_acc = (np.mean(sdqc_accs), np.std(sdqc_accs))
+    sdqc_f1 = (np.mean(sdqc_f1s), np.std(sdqc_f1s))
+    print('Task A: SDQC')
+    print('  Accuracy: {:.2%}±{:.2%}'
+          '  F1-Score: {:.2%}±{:.2%}'
+          .format(sdqc_acc[0], sdqc_acc[1],
+                  sdqc_f1[0], sdqc_f1[1]))
+    display_report(sdqc_reports)
+
+    verif_acc = (np.mean(verif_accs), np.std(verif_accs))
+    verif_f1 = (np.mean(verif_f1s), np.std(verif_f1s))
+    verif_rmse = (np.mean(verif_rmses), np.std(verif_rmses))
+    print('Task B: Verification')
+    print('  Accuracy: {:.2%}±{:.2%}'
+          '  F1-Score: {:.2%}±{:.2%}'
+          '  RMSE: {:.4f}±{:.4f}'
+          .format(verif_acc[0], verif_acc[1],
+                  verif_f1[0], verif_f1[1],
+                  verif_rmse[0], verif_rmse[1]))
+    display_report(verif_reports)
