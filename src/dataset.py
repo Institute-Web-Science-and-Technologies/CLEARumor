@@ -92,10 +92,12 @@ class Post:
             Reddit posts, since the dataset has no topic labels for them.
         user_verified: Whether the user is a verified Twitter user. `None` for
             Reddit posts, since the dataset does not contain any info on this.
-        followers_count: The number of followers for Twitter posts' authors.
-            `None` for Reddit posts, since the concept doesn't exist for Reddit.
-        friends_count: The number of friends for Twitter posts' authors.
-            `None` for Reddit posts, since the concept doesn't exist for Reddit.
+        followers_count: For Twitter posts, the number of followers the author
+            of the post has. `None` for Reddit posts, since the concept doesn't
+            exist for Reddit.
+        friends_count: For Twitter posts, the number of accounts the author of
+            the post is following. `None` for Reddit posts, since the concept
+            doesn't exist for Reddit.
         upvote_ratio: The upvote ratio for Reddit posts. `None` for Twitter
             posts, since the concept doesn't exist for Twitter.
     """

@@ -13,7 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from datetime import datetime
 from itertools import chain
+from pathlib import Path
 from time import time
 from warnings import filterwarnings
 
@@ -25,7 +27,7 @@ from src.dataset import check_for_required_external_data_files, load_posts, \
 from src.sdqc import Sdqc
 from src.util import ScalingMode, arrange_folds_for_k_fold_cross_validation, \
     calculate_post_elmo_embeddings, display_results, filter_instances, \
-    generate_folds_for_k_fold_cross_validation
+    generate_folds_for_k_fold_cross_validation, write_answers_json
 from src.verif import Verif
 
 time_before = time()
@@ -103,6 +105,9 @@ verif_test_accs, verif_test_f1s, verif_test_rmses, verif_test_reports = \
     [], [], [], []
 verif_cv_accs, verif_cv_f1s, verif_cv_rmses, verif_cv_reports = [], [], [], []
 
+answers_dir = Path('answers') / (datetime.utcnow().isoformat() + 'Z')
+answers_dir.mkdir(parents=True, exist_ok=False)
+
 print()
 print('-- Organizer Split ----------------------------------------------------')
 
@@ -118,19 +123,19 @@ for repetition_no in range(NUM_REPETITIONS):
     sdqc_model = sdqc.train(sdqc_train_dataset,
                             sdqc_dev_dataset,
                             print_progress=False)
+    sdqc_estimates = sdqc.predict(sdqc_model, posts.keys())
     if sdqc_dev_dataset:
         acc, f1, report = sdqc.eval(sdqc_model, sdqc_dev_dataset)
-        print('Validation:  Accuracy={:.2%}  F1-score={:.2%}'.format(acc, f1))
+        print('Validation:  Accuracy={:.1%}  F1-score={:.1%}'.format(acc, f1))
         sdqc_dev_accs.append(acc)
         sdqc_dev_f1s.append(f1)
         sdqc_dev_reports.append(report)
     if sdqc_test_dataset:
         acc, f1, report = sdqc.eval(sdqc_model, sdqc_test_dataset)
-        print('Test:        Accuracy={:.2%}  F1-score={:.2%}'.format(acc, f1))
+        print('Test:        Accuracy={:.1%}  F1-score={:.1%}'.format(acc, f1))
         sdqc_test_accs.append(acc)
         sdqc_test_f1s.append(f1)
         sdqc_test_reports.append(report)
-    sdqc_estimates = sdqc.predict(sdqc_model, posts.keys())
 
     print('Task B: Verification')
     verif_train_dataset, verif_dev_dataset, verif_test_dataset = \
@@ -141,9 +146,13 @@ for repetition_no in range(NUM_REPETITIONS):
     verif_model = verif.train(verif_train_dataset,
                               verif_dev_dataset,
                               print_progress=False)
+    verif_estimates = verif.predict(
+        verif_model,
+        [post.id for post in posts.values() if post.has_source_depth],
+        sdqc_estimates)
     if verif_dev_dataset:
         acc, f1, rmse, report = verif.eval(verif_model, verif_dev_dataset)
-        print('Validation:  Accuracy={:.2%}  F1-score={:.2%}  RMSE={:.4f}'
+        print('Validation:  Accuracy={:.1%}  F1-score={:.1%}  RMSE={:.3f}'
               .format(acc, f1, rmse))
         verif_dev_accs.append(acc)
         verif_dev_f1s.append(f1)
@@ -151,16 +160,30 @@ for repetition_no in range(NUM_REPETITIONS):
         verif_dev_reports.append(report)
     if verif_test_dataset:
         acc, f1, rmse, report = verif.eval(verif_model, verif_test_dataset)
-        print('Test:        Accuracy={:.2%}  F1-score={:.2%}  RMSE={:.4f}'
+        print('Test:        Accuracy={:.1%}  F1-score={:.1%}  RMSE={:.3f}'
               .format(acc, f1, rmse))
         verif_test_accs.append(acc)
         verif_test_f1s.append(f1)
         verif_test_rmses.append(rmse)
         verif_test_reports.append(report)
-    verif_estimates = verif.predict(
-        verif_model,
-        [post.id for post in posts.values() if post.has_source_depth],
-        sdqc_estimates)
+
+    write_answers_json(
+        answers_dir / 'answers.organizers_rep{}_train.json'.format(
+            repetition_no),
+        sdqc_train_instances, verif_train_instances,
+        sdqc_estimates, verif_estimates)
+    if sdqc_dev_instances and verif_dev_instances:
+        write_answers_json(
+            answers_dir / 'answers.organizers_rep{}_dev.json'.format(
+                repetition_no),
+            sdqc_dev_instances, verif_dev_instances,
+            sdqc_estimates, verif_estimates)
+    if sdqc_test_instances and verif_test_instances:
+        write_answers_json(
+            answers_dir / 'answers.organizers_rep{}_test.json'.format(
+                repetition_no),
+            sdqc_test_instances, verif_test_instances,
+            sdqc_estimates, verif_estimates)
 
 print()
 print('-- k-fold Cross Validation --------------------------------------------')
@@ -174,23 +197,22 @@ for repetition_no in range(NUM_REPETITIONS):
         print()
         print('# Cross Validation {}/{}'.format(i + 1, NUM_FOLDS))
 
-        print('Task A: SDQC')
         train_post_ids, test_post_ids = \
             arrange_folds_for_k_fold_cross_validation(folds, i)
 
+        print('Task A: SDQC')
         sdqc_train_instances, sdqc_test_instances = \
             filter_instances(train_post_ids, test_post_ids, sdqc_all_instances)
         sdqc_train_dataset, _, sdqc_test_dataset = \
             sdqc.build_datasets(sdqc_train_instances, None, sdqc_test_instances)
         sdqc_model = sdqc.train(sdqc_train_dataset, print_progress=False)
-        if sdqc_test_dataset:
-            acc, f1, report = sdqc.eval(sdqc_model, sdqc_test_dataset)
-            print('Test:        Accuracy={:.2%}  F1-score={:.2%}'
-                  .format(acc, f1))
-            sdqc_cv_accs.append(acc)
-            sdqc_cv_f1s.append(f1)
-            sdqc_cv_reports.append(report)
         sdqc_estimates = sdqc.predict(sdqc_model, posts.keys())
+        acc, f1, report = sdqc.eval(sdqc_model, sdqc_test_dataset)
+        print('Test:        Accuracy={:.1%}  F1-score={:.1%}'
+              .format(acc, f1))
+        sdqc_cv_accs.append(acc)
+        sdqc_cv_f1s.append(f1)
+        sdqc_cv_reports.append(report)
 
         print('Task B: Verification')
         verif_train_instances, verif_test_instances = \
@@ -200,18 +222,28 @@ for repetition_no in range(NUM_REPETITIONS):
                                  verif_test_instances,
                                  sdqc_estimates)
         verif_model = verif.train(verif_train_dataset, print_progress=False)
-        if verif_test_dataset:
-            acc, f1, rmse, report = verif.eval(verif_model, verif_test_dataset)
-            print('Test:        Accuracy={:.2%}  F1-score={:.2%}  RMSE={:.4f}'
-                  .format(acc, f1, rmse))
-            verif_cv_accs.append(acc)
-            verif_cv_f1s.append(f1)
-            verif_cv_rmses.append(rmse)
-            verif_cv_reports.append(report)
         verif_estimates = verif.predict(
             verif_model,
             [post.id for post in posts.values() if post.has_source_depth],
             sdqc_estimates)
+        acc, f1, rmse, report = verif.eval(verif_model, verif_test_dataset)
+        print('Test:        Accuracy={:.1%}  F1-score={:.1%}  RMSE={:.3f}'
+              .format(acc, f1, rmse))
+        verif_cv_accs.append(acc)
+        verif_cv_f1s.append(f1)
+        verif_cv_rmses.append(rmse)
+        verif_cv_reports.append(report)
+
+        write_answers_json(
+            answers_dir / 'answers.kfold_rep{}_cv{}_train.json'.format(
+                repetition_no, i),
+            sdqc_train_instances, verif_train_instances,
+            sdqc_estimates, verif_estimates)
+        write_answers_json(
+            answers_dir / 'answers.kfold_rep{}_cv{}_test.json'.format(
+                repetition_no, i),
+            sdqc_test_instances, verif_test_instances,
+            sdqc_estimates, verif_estimates)
 
 print()
 print('-- Results ------------------------------------------------------------')

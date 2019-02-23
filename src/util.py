@@ -12,15 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections import defaultdict
+import json
+from collections import OrderedDict, defaultdict
 from enum import Enum
 from itertools import chain
 from math import sqrt
+from pathlib import Path
 from pprint import pprint
 from random import shuffle
 from sys import maxsize
 from time import time
-from typing import Callable, Dict, Iterable, List, Optional, Set, Union
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import torch
@@ -49,7 +51,7 @@ class DatasetHelper(Dataset):
         post_platform = [post.platform == Post.Platform.twitter,
                          post.platform == Post.Platform.reddit]
 
-        post_author = [0, 1, 0, 0, 1]
+        post_author = [0, 0, 0, 0, 0]
         if post.platform == Post.Platform.twitter:
             post_author = [post.user_verified,
                            not post.user_verified,
@@ -290,7 +292,7 @@ def display_results(sdqc_accs: Iterable[float],
         for outer_key, inner_report in report_lists.items():
             report_stats[outer_key] = {}
             for inner_key, values in inner_report.items():
-                report_stats[outer_key][inner_key] = '{:.2%}±{:.2%}'.format(
+                report_stats[outer_key][inner_key] = '{:.1%}±{:.1%}'.format(
                     np.mean(values), np.std(values))
 
         pprint(report_stats)
@@ -298,8 +300,8 @@ def display_results(sdqc_accs: Iterable[float],
     sdqc_acc = (np.mean(sdqc_accs), np.std(sdqc_accs))
     sdqc_f1 = (np.mean(sdqc_f1s), np.std(sdqc_f1s))
     print('Task A: SDQC')
-    print('  Accuracy: {:.2%}±{:.2%}'
-          '  F1-Score: {:.2%}±{:.2%}'
+    print('  Accuracy: {:.1%}±{:.1%}'
+          '  F1-Score: {:.1%}±{:.1%}'
           .format(sdqc_acc[0], sdqc_acc[1],
                   sdqc_f1[0], sdqc_f1[1]))
     display_report(sdqc_reports)
@@ -308,10 +310,35 @@ def display_results(sdqc_accs: Iterable[float],
     verif_f1 = (np.mean(verif_f1s), np.std(verif_f1s))
     verif_rmse = (np.mean(verif_rmses), np.std(verif_rmses))
     print('Task B: Verification')
-    print('  Accuracy: {:.2%}±{:.2%}'
-          '  F1-Score: {:.2%}±{:.2%}'
-          '  RMSE: {:.4f}±{:.4f}'
+    print('  Accuracy: {:.1%}±{:.1%}'
+          '  F1-Score: {:.1%}±{:.1%}'
+          '  RMSE: {:.3f}±{:.3f}'
           .format(verif_acc[0], verif_acc[1],
                   verif_f1[0], verif_f1[1],
                   verif_rmse[0], verif_rmse[1]))
     display_report(verif_reports)
+
+
+def write_answers_json(
+        path: Path,
+        sdqc_instances: List[SdqcInstance],
+        verif_instances: List[SdqcInstance],
+        sdqc_estimates: Dict[str, Tuple[SdqcInstance.Label,
+                                        Dict[SdqcInstance.Label, float]]],
+        verif_estimates: Dict[str, Tuple[VerifInstance.Label, float]]):
+    sdqc_answers = OrderedDict()
+    for instance in sdqc_instances:
+        answer = sdqc_estimates[instance.post_id]
+        sdqc_answers[instance.post_id] = answer[0].name
+
+    verif_answers = OrderedDict()
+    for instance in verif_instances:
+        answer = verif_estimates[instance.post_id]
+        verif_answers[instance.post_id] = (answer[0].name, answer[1])
+
+    answers = OrderedDict()
+    answers['subtaskaenglish'] = sdqc_answers
+    answers['subtaskbenglish'] = verif_answers
+
+    with path.open('w', encoding='UTF-8') as fout:
+        json.dump(answers, fout, indent=2)

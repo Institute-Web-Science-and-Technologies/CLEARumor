@@ -85,7 +85,7 @@ class Verif:
 
                 post_has_media = [source_post.has_media,
                                   not source_post.has_media]
-                post_upvote_ratio = 0
+                post_upvote_ratio = 0.5
                 if source_post.upvote_ratio:
                     post_upvote_ratio = source_post.upvote_ratio
 
