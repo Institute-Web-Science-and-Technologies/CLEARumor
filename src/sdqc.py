@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from time import time
-from typing import Dict, Iterable, List, Tuple
+from itertools import chain
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -24,9 +24,10 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from src.dataset import Post, SdqcInstance, load_sdcq_instances
-from src.util import DatasetHelper, ScalingMode
+from src.util import DatasetHelper, ScalingMode, \
+    generate_folds_for_k_fold_cross_validation_helper
 
-EVAL_DEV_EVERY_N_EPOCH = 5
+EVAL_DEV_EVERY_N_EPOCH = 20
 
 
 class Sdqc:
@@ -74,9 +75,6 @@ class Sdqc:
         self._post_embeddings = post_embeddings
         self._hparams = hparams
         self._device = device
-        self.model = None
-
-        self._load_data()
 
     class Dataset(DatasetHelper):
         def __init__(self,
@@ -112,48 +110,84 @@ class Sdqc:
                               if instance.label else 0),
                 })
 
-    def _load_data(self):
-        print()
-        print('Loading SDQC data...')
-        time_before = time()
-        train, dev, test = load_sdcq_instances()
-        print('  Number of instances: train={:d}, dev={:d}, test={:d}'.format(
-            len(train), len(dev), len(test) if test else 0))
+    def _load_datasets(self,
+                       train_instances: Iterable[SdqcInstance],
+                       dev_instances: Optional[Iterable[SdqcInstance]],
+                       test_instances: Optional[Iterable[SdqcInstance]]) \
+            -> ('Sdqc.Dataset',
+                Optional['Sdqc.Dataset'],
+                Optional['Sdqc.Dataset']):
+        print('Number of instances: train={:d}, dev={:d}, test={:d}'
+              .format(len(train_instances),
+                      len(dev_instances or []),
+                      len(test_instances or [])))
 
-        self._train_data = self.Dataset(
-            train, self._posts, self._post_embeddings, self._hparams,
+        train_dataset = self.Dataset(
+            train_instances, self._posts, self._post_embeddings, self._hparams,
             self._device)
-        self._dev_data = self.Dataset(
-            dev, self._posts, self._post_embeddings, self._hparams,
-            self._device)
-        self._test_data = self.Dataset(
-            test, self._posts, self._post_embeddings, self._hparams,
-            self._device)
+
+        dev_dataset = None
+        if dev_instances:
+            dev_dataset = self.Dataset(
+                dev_instances, self._posts, self._post_embeddings,
+                self._hparams, self._device)
+
+        test_dataset = None
+        if test_instances:
+            test_dataset = self.Dataset(
+                test_instances, self._posts, self._post_embeddings,
+                self._hparams, self._device)
 
         def filter_func(post_id: str) -> bool:
             return self._posts[post_id].platform == Post.Platform.twitter
 
         for index in self._hparams.input_aux_scaling_features:
             min, max, mean, std = \
-                self._train_data.calc_stats_for_aux_feature(index, filter_func)
+                train_dataset.calc_stats_for_aux_feature(index, filter_func)
 
-            if self._hparams.input_aux_scaling_mode == ScalingMode.none:
-                pass
-            elif self._hparams.input_aux_scaling_mode == ScalingMode.min_max:
-                args = [index, min, max, filter_func]
-                self._train_data.min_max_scale_aux_feature(*args)
-                self._dev_data.min_max_scale_aux_feature(*args)
-                self._test_data.min_max_scale_aux_feature(*args)
-            elif self._hparams.input_aux_scaling_mode == ScalingMode.standard:
-                args = [index, mean, std, filter_func]
-                self._train_data.standard_scale_aux_feature(*args)
-                self._dev_data.standard_scale_aux_feature(*args)
-                self._test_data.standard_scale_aux_feature(*args)
-            else:
-                raise ValueError('Unimplemented enum variant.')
+            for dataset in (train_dataset, dev_dataset, test_dataset):
+                if not dataset:
+                    continue
 
-        time_after = time()
-        print('  Took {:.2f}s.'.format(time_after - time_before))
+                if self._hparams.input_aux_scaling_mode == ScalingMode.none:
+                    pass
+                elif (self._hparams.input_aux_scaling_mode
+                      == ScalingMode.min_max):
+                    dataset.min_max_scale_aux_feature(
+                        index, min, max, filter_func)
+                elif (self._hparams.input_aux_scaling_mode
+                      == ScalingMode.standard):
+                    dataset.standard_scale_aux_feature(
+                        index, mean, std, filter_func)
+                else:
+                    raise ValueError('Unimplemented enum variant.')
+
+        return train_dataset, dev_dataset, test_dataset
+
+    def load_organizer_split(self) -> ('Sdqc.Dataset',
+                                       'Sdqc.Dataset',
+                                       Optional['Sdqc.Dataset']):
+        train_instances, dev_instances, test_instances = load_sdcq_instances()
+        return self._load_datasets(
+            train_instances, dev_instances, test_instances)
+
+    def generate_folds_for_k_fold_cross_validation(self, num_folds: int) \
+            -> List[List[SdqcInstance]]:
+        train_instances, dev_instances, test_instances = load_sdcq_instances()
+        return generate_folds_for_k_fold_cross_validation_helper(
+            num_folds, self._posts, train_instances, dev_instances,
+            test_instances)
+
+    def arrange_folds_for_k_fold_cross_validation(
+            self, folds: List[List[SdqcInstance]], index: int) \
+            -> ('Sdqc.Dataset', 'Sdqc.Dataset'):
+        train_instances = list(chain.from_iterable(
+            fold for i, fold in enumerate(folds) if i != index))
+        test_instances = folds[index]
+
+        train_dataset, _, test_dataset = \
+            self._load_datasets(train_instances, None, test_instances)
+        return train_dataset, test_dataset
 
     class Model(nn.Module):
         def __init__(self, hparams: 'Sdqc.Hyperparameters'):
@@ -245,80 +279,89 @@ class Sdqc:
 
             return logits
 
-    def train(self) -> None:
-        print('Training SDQC model...')
-        self.model = self.Model(self._hparams).to(self._device)
+    def train(self,
+              train_dataset: 'Sdqc.Dataset',
+              dev_dataset: Optional['Sdqc.Dataset'] = None,
+              print_progress: bool = False) -> 'Sdqc.Model':
+        model = self.Model(self._hparams).to(self._device)
 
         criterion = nn.CrossEntropyLoss(
             weight=torch.tensor(self._hparams.class_weights,
                                 dtype=torch.float32,
                                 device=self._device))
-        optimizer = optim.Adam(self.model.parameters(),
+        optimizer = optim.Adam(model.parameters(),
                                lr=self._hparams.learning_rate,
                                weight_decay=self._hparams.weight_decay)
 
         train_loader = DataLoader(
-            self._train_data, batch_size=self._hparams.batch_size, shuffle=True)
+            train_dataset, batch_size=self._hparams.batch_size, shuffle=True)
 
         for epoch_no in range(1, self._hparams.num_epochs + 1):
             losses, labels, predictions = [], [], []
 
-            with tqdm(total=(len(train_loader)), unit='batch',
-                      desc='Epoch: {:{}d}/{:d}'.format(
-                          epoch_no, len(str(self._hparams.num_epochs)),
-                          self._hparams.num_epochs)) \
-                    as progress_bar:
-                for batch_no, batch in enumerate(train_loader):
-                    optimizer.zero_grad()
+            progress_bar = None
+            if print_progress:
+                progress_bar = tqdm(total=(len(train_loader)),
+                                    unit='batch',
+                                    desc='Epoch: {:{}d}/{:d}'.format(
+                                        epoch_no,
+                                        len(str(self._hparams.num_epochs)),
+                                        self._hparams.num_epochs))
 
-                    self.model.train()
-                    batch_logits = self.model(batch['emb'], batch['features'])
-                    with torch.no_grad():
-                        batch_prediction = torch.argmax(batch_logits, dim=1)
+            for batch_no, batch in enumerate(train_loader):
+                optimizer.zero_grad()
 
-                    loss = criterion(batch_logits, batch['label'])
-                    loss.backward()
-                    optimizer.step()
+                model.train()
+                batch_logits = model(batch['emb'], batch['features'])
+                with torch.no_grad():
+                    batch_prediction = torch.argmax(batch_logits, dim=1)
 
-                    losses.append(loss.item())
-                    labels.append(batch['label'].data.cpu().numpy())
-                    predictions.append(batch_prediction.data.cpu().numpy())
+                loss = criterion(batch_logits, batch['label'])
+                loss.backward()
+                optimizer.step()
 
+                losses.append(loss.item())
+                labels.append(batch['label'].data.cpu().numpy())
+                predictions.append(batch_prediction.data.cpu().numpy())
+
+                if progress_bar:
                     progress_bar.set_postfix({
                         'loss': '{:.2e}'.format(loss.item()),
                     })
                     progress_bar.update(1)
 
-            # print(list(self.model.elmo._scalar_mixes[0].scalar_parameters))
+            if progress_bar:
+                progress_bar.close()
 
-            labels = np.concatenate(labels)
-            predictions = np.concatenate(predictions)
+                labels = np.concatenate(labels)
+                predictions = np.concatenate(predictions)
 
-            epoch_loss = np.mean(losses)
-            epoch_acc = accuracy_score(labels, predictions)
-            epoch_f1 = f1_score(labels, predictions, average='macro')
-            print('  Loss={:.2e}  Accuracy={:.2%}  F1-score={:.2%}'
-                  .format(epoch_loss, epoch_acc, epoch_f1))
+                epoch_loss = np.mean(losses)
+                epoch_acc = accuracy_score(labels, predictions)
+                epoch_f1 = f1_score(labels, predictions, average='macro')
 
-            if (epoch_no == self._hparams.num_epochs
-                    or not epoch_no % EVAL_DEV_EVERY_N_EPOCH):
-                dev_acc, dev_f1 = self.eval(self._dev_data)
+                print('  Loss={:.2e}  Accuracy={:.2%}  F1-score={:.2%}'
+                      .format(epoch_loss, epoch_acc, epoch_f1))
+
+            if print_progress and dev_dataset and \
+                    (epoch_no == self._hparams.num_epochs
+                     or not epoch_no % EVAL_DEV_EVERY_N_EPOCH):
+                dev_acc, dev_f1 = self.eval(model, dev_dataset)
                 print('  Validation:    Accuracy={:.2%}  F1-score={:.2%}'
                       .format(dev_acc, dev_f1))
 
-        test_acc, test_f1 = self.eval(self._test_data)
-        print('Test:            Accuracy={:.2%}  F1-score={:.2%}'
-              .format(test_acc, test_f1))
+        return model
 
-    def eval(self, dataset: 'Sdqc.Dataset') -> (float, float):
+    def eval(self, model: 'Sdqc.Model', dataset: 'Sdqc.Dataset') \
+            -> (float, float):
         labels, predictions = [], []
 
         with torch.no_grad():
-            data_loader = DataLoader(dataset,
-                                     batch_size=self._hparams.batch_size)
+            data_loader = DataLoader(
+                dataset, batch_size=self._hparams.batch_size)
             for batch in data_loader:
-                self.model.eval()
-                batch_logits = self.model(batch['emb'], batch['features'])
+                model.eval()
+                batch_logits = model(batch['emb'], batch['features'])
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 
                 labels.append(batch['label'].data.cpu().numpy())
@@ -332,10 +375,10 @@ class Sdqc:
 
         return acc, f1
 
-    def predict(self, post_ids: Iterable[str]) \
+    def predict(self, model: 'Sdqc.Model', post_ids: Iterable[str]) \
             -> Dict[str, Tuple[SdqcInstance.Label,
                                Dict[SdqcInstance.Label, float]]]:
-        instances = [SdqcInstance(post_id, None) for post_id in post_ids]
+        instances = [SdqcInstance(post_id) for post_id in post_ids]
         dataset = self.Dataset(instances, self._posts, self._post_embeddings,
                                self._hparams, self._device)
 
@@ -344,8 +387,8 @@ class Sdqc:
             data_loader = DataLoader(dataset,
                                      batch_size=self._hparams.batch_size)
             for batch in data_loader:
-                self.model.eval()
-                batch_logits = self.model(batch['emb'], batch['features'])
+                model.eval()
+                batch_logits = model(batch['emb'], batch['features'])
                 batch_probs = F.softmax(batch_logits, dim=1)
                 batch_prediction = torch.argmax(batch_logits, dim=1)
 

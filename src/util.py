@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import defaultdict
 from enum import Enum
+from itertools import chain
 from math import sqrt
+from random import shuffle
+from sys import maxsize
 from time import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -24,7 +28,7 @@ from allennlp.modules.elmo import Elmo, batch_to_ids
 from torch.utils.data import Dataset
 
 from src.dataset import ELMO_OPTIONS_FILE, ELMO_WEIGHTS_FILE, Post, \
-    VerifInstance
+    SdqcInstance, VerifInstance
 
 
 class ScalingMode(Enum):
@@ -195,6 +199,46 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
     print('  Took {:.2f}s.'.format(time_after - time_before))
 
     return post_embeddings
+
+
+def generate_folds_for_k_fold_cross_validation_helper(
+        num_folds: int,
+        posts: Dict[str, Post],
+        train_instances: List[Union[SdqcInstance, VerifInstance]],
+        dev_instances: Optional[List[Union[SdqcInstance, VerifInstance]]],
+        test_instances: Optional[List[Union[SdqcInstance, VerifInstance]]]) \
+        -> List[List[Union[SdqcInstance, VerifInstance]]]:
+    instances_per_discriminator = defaultdict(list)
+    for instance in chain(
+            train_instances, dev_instances, test_instances or []):
+        post = posts[instance.post_id]
+        if post.platform == Post.Platform.twitter:
+            discriminator = post.topic
+        elif post.platform == Post.Platform.reddit:
+            discriminator = post.source_id
+        else:
+            raise ValueError('Unimplemented enum variant.')
+        instances_per_discriminator[discriminator].append(instance)
+    instances_per_discriminator = list(instances_per_discriminator.values())
+    shuffle(instances_per_discriminator)
+
+    folds = [[] for _ in range(num_folds)]
+    for instances in instances_per_discriminator:
+        # Find fold with fewest elements
+        index = None
+        num_elements = maxsize
+        for i, fold in enumerate(folds):
+            if num_elements > len(fold):
+                num_elements = len(fold)
+                index = i
+
+        # Add instances to that fold
+        folds[index].extend(instances)
+
+    for fold in folds:
+        shuffle(fold)
+
+    return folds
 
 
 def rmse_score(labels, predictions, confidences):
