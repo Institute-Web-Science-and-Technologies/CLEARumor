@@ -43,6 +43,20 @@ architectures, please, don't hesitate to contact the authors or report an issue.
 * [Institute for Web Science and Technoloogies](https://west.uni-koblenz.de),
   University of Koblenz-Landau
 
+## Reference
+If you use this repository, please cite the following paper:
+~~~~
+@article{DBLP:journals/corr/abs-1904-03084,
+  author    = {Ipek Baris and
+               Lukas Schmelzeisen and
+               Steffen Staab},
+  title     = {CLEARumor at SemEval-2019 Task 7: ConvoLving ELMo Against Rumors},
+  journal   = {CoRR},
+  volume    = {abs/1904.03084},
+  year      = {2019}
+}
+~~~~
+
 ## License
 
 All code is license under the [Apache License Version 2.0](https://www.apache.org/licenses/LICENSE-2.0).
