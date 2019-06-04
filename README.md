@@ -1,5 +1,32 @@
 # CLEARumor: ConvoLving ELMo Against Rumors @&nbsp;RumorEval 2019
 
+This repository contains the code used in the following paper:
+
+[Ipek Baris, Lukas Schmelzeisen, and Steffen Staab (2019). “CLEARumor at
+SemEval-2019 Task 7: ConvoLving ELMo Against Rumors”. In: SemEval@NAACL-HLT.
+Association for Computational Linguistics,
+pp. 1105–1109.](paper.pdf)
+[[ACL Anthology]](https://www.aclweb.org/anthology/papers/S/S19/S19-2193/)
+[[arXiv]](https://arxiv.org/abs/1904.03084)
+[[Poster]](poster.pdf)
+
+If you use this in your work, please cite as:
+
+```text
+@inproceedings{DBLP:conf/semeval/BarisSS19,
+  author    = {Ipek Baris and
+               Lukas Schmelzeisen and
+               Steffen Staab},
+  title     = {{CLEAR}umor at {S}em{E}val-2019 Task 7: {C}onvo{L}ving {ELM}o
+               {A}gainst {R}umors},
+  booktitle = {SemEval@NAACL-HLT},
+  pages     = {1105--1109},
+  publisher = {Association for Computational Linguistics},
+  year      = {2019},
+  url       = {https://www.aclweb.org/anthology/S19-2193},
+}
+```
+
 ## Dependencies
 
 Python 3.6+ is required.
@@ -38,8 +65,8 @@ Python 3.6+ is required.
 If you have any questions regarding the code or the employed machine learning
 architectures, please, don't hesitate to contact the authors or report an issue.
 
-* Lukas Schmelzeisen, [lukas@uni-koblenz.de](mailto:lukas@uni-koblenz.de)
-* Ipek Baris, [ibaris@uni-koblenz.de](mailto:ibaris@uni-koblenz.de)
+* Lukas Schmelzeisen, [lukas@uni-koblenz.de](mailto:lukas@uni-koblenz.de), [@lschmelzeisen](https://twitter.com/lschmelzeisen)
+* Ipek Baris, [ibaris@uni-koblenz.de](mailto:ibaris@uni-koblenz.de), [@ipekbrs](https://twitter.com/ipekbrs)
 * [Institute for Web Science and Technoloogies](https://west.uni-koblenz.de),
   University of Koblenz-Landau
 
