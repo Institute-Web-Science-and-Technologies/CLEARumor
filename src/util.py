@@ -285,8 +285,11 @@ def display_results(sdqc_accs: Iterable[float],
         report_lists = defaultdict(lambda: defaultdict(list))
         for report in reports:
             for outer_key, inner_report in report.items():
-                for inner_key, value in inner_report.items():
-                    report_lists[outer_key][inner_key].append(value)
+                if outer_key == 'accuracy':
+                    report_lists[outer_key]['accuracy'].append(inner_report)
+                else:
+                    for inner_key, value in inner_report.items():
+                        report_lists[outer_key][inner_key].append(value)
 
         report_stats = {}
         for outer_key, inner_report in report_lists.items():
