@@ -144,6 +144,9 @@ for repetition_no in range(NUM_ORGA_REPETITIONS):
         sdqc_test_f1s.append(f1)
         sdqc_test_reports.append(report)
 
+    model_path = 'data/sdqc_model_{}.pth'.format(repetition_no)
+    torch.save(sdqc_model.state_dict(),model_path)
+
     print('Task B: Verification')
     t1 = time()
     verif_train_dataset, verif_dev_dataset, verif_test_dataset = \
@@ -177,6 +180,8 @@ for repetition_no in range(NUM_ORGA_REPETITIONS):
         verif_test_f1s.append(f1)
         verif_test_rmses.append(rmse)
         verif_test_reports.append(report)
+        model_path = 'data/verif_model_{}.pth'.format(repetition_no)
+        torch.save(verif_model.state_dict(),model_path)
 
     write_answers_json(
         answers_dir / 'answers.organizers_rep{}_train.json'.format(

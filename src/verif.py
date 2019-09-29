@@ -80,58 +80,7 @@ class Verif:
             for instance in instances:
                 source_post = posts[instance.post_id]
 
-                post_platform, post_author, post_similarity_to_source = \
-                    self.calc_shared_features(source_post)
-
-                post_has_media = [source_post.has_media,
-                                  not source_post.has_media]
-                post_upvote_ratio = 0.5
-                if source_post.upvote_ratio:
-                    post_upvote_ratio = source_post.upvote_ratio
-
-                num_childs = 0
-                depths = {'reply': 0, 'nested': 0}
-                predictions = {label: 0 for label in SdqcInstance.Label}
-                estimates = {label: 0 for label in SdqcInstance.Label}
-
-                for post in posts.values():
-                    if post.source_id == source_post.id:
-                        num_childs += 1
-
-                        if post.has_reply_depth:
-                            depths['reply'] += 1
-                        elif post.has_nested_depth:
-                            depths['nested'] += 1
-
-                        predictions[sdqc_estimates[post.id][0]] += 1
-                        for label, prob in sdqc_estimates[post.id][1].items():
-                            estimates[label] += prob
-
-                depths = {depth: num / num_childs
-                          for depth, num in depths.items()}
-                predictions = {label: num / num_childs
-                               for label, num in predictions.items()}
-                estimates = {label: prob / num_childs
-                             for label, prob in estimates.items()}
-
-                depths = [depths['reply'],
-                          depths['nested']]
-                predictions = [predictions[SdqcInstance.Label.support],
-                               predictions[SdqcInstance.Label.deny],
-                               predictions[SdqcInstance.Label.query]]
-                estimates = [estimates[SdqcInstance.Label.support],
-                             estimates[SdqcInstance.Label.deny],
-                             estimates[SdqcInstance.Label.query]]
-
-                post_features = (np.concatenate((post_platform,
-                                                 post_author,
-                                                 [post_similarity_to_source],
-                                                 post_has_media,
-                                                 [post_upvote_ratio],
-                                                 depths,
-                                                 # predictions,
-                                                 estimates))
-                                 .astype(np.float32))
+                post_features = self.calc_features(source_post, posts, sdqc_estimates)
 
                 self._dataset.append({
                     'post_id': source_post.id,
@@ -139,6 +88,59 @@ class Verif:
                     'label': (torch.tensor(instance.label.value, device=device)
                               if instance.label else 0),
                 })
+
+        @classmethod
+        def calc_features(cls, source_post: Post, posts: List[Post],post_embeddings: Dict[str, torch.tensor], sdqc_estimates:  Dict[str, Tuple[SdqcInstance.Label,
+                                                     Dict[SdqcInstance.Label,
+                                                          float]]]):
+            post_platform, post_author, post_similarity_to_source = \
+                cls.calc_shared_features(source_post,post_embeddings)
+            post_has_media = [source_post.has_media,
+                              not source_post.has_media]
+            post_upvote_ratio = 0.5
+            if source_post.upvote_ratio:
+                post_upvote_ratio = source_post.upvote_ratio
+            num_childs = 0
+            depths = {'reply': 0, 'nested': 0}
+            predictions = {label: 0 for label in SdqcInstance.Label}
+            estimates = {label: 0 for label in SdqcInstance.Label}
+            for post in posts.values():
+                if post.source_id == source_post.id:
+                    num_childs += 1
+
+                    if post.has_reply_depth:
+                        depths['reply'] += 1
+                    elif post.has_nested_depth:
+                        depths['nested'] += 1
+
+                    predictions[sdqc_estimates[post.id][0]] += 1
+                    for label, prob in sdqc_estimates[post.id][1].items():
+                        estimates[label] += prob
+            depths = {depth: num / num_childs
+                      for depth, num in depths.items()}
+            predictions = {label: num / num_childs
+                           for label, num in predictions.items()}
+            estimates = {label: prob / num_childs
+                         for label, prob in estimates.items()}
+            depths = [depths['reply'],
+                      depths['nested']]
+            predictions = [predictions[SdqcInstance.Label.support],
+                           predictions[SdqcInstance.Label.deny],
+                           predictions[SdqcInstance.Label.query]]
+            estimates = [estimates[SdqcInstance.Label.support],
+                         estimates[SdqcInstance.Label.deny],
+                         estimates[SdqcInstance.Label.query]]
+            return (np.concatenate((post_platform,
+                                             post_author,
+                                             [post_similarity_to_source],
+                                             post_has_media,
+                                             [post_upvote_ratio],
+                                             depths,
+                                             # predictions,
+                                             estimates
+                                    ))
+                             .astype(np.float32))
+
 
     def build_datasets(self,
                        train_instances: Iterable[VerifInstance],

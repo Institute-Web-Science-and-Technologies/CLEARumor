@@ -87,18 +87,7 @@ class Sdqc:
                 post = posts[instance.post_id]
                 post_embedding = post_embeddings[post.id]
 
-                post_platform, post_author, post_similarity_to_source = \
-                    self.calc_shared_features(post)
-
-                post_type = [post.has_source_depth,
-                             post.has_reply_depth,
-                             post.has_nested_depth]
-
-                post_features = (np.concatenate((post_platform,
-                                                 post_author,
-                                                 [post_similarity_to_source],
-                                                 post_type))
-                                 .astype(np.float32))
+                post_features = self.calc_features(post, post_embeddings)
 
                 self._dataset.append({
                     'post_id': post.id,
@@ -107,6 +96,21 @@ class Sdqc:
                     'label': (torch.tensor(instance.label.value, device=device)
                               if instance.label else 0),
                 })
+
+        @classmethod
+        def calc_features(cls, post: Post, post_embeddings: Dict[str, torch.tensor]):
+            post_platform, post_author, post_similarity_to_source = \
+                cls.calc_shared_features(post, post_embeddings)
+
+            post_type = [post.has_source_depth,
+                         post.has_reply_depth,
+                         post.has_nested_depth]
+
+            return (np.concatenate((post_platform,
+                                    post_author,
+                                    [post_similarity_to_source],
+                                    post_type))
+                    .astype(np.float32))
 
     def build_datasets(self,
                        train_instances: Iterable[SdqcInstance],
@@ -373,6 +377,5 @@ class Sdqc:
                         batch['post_id'], batch_prediction, batch_probs):
                     results[post_id] = \
                         (SdqcInstance.Label(prediction.item()),
-                         dict(zip(SdqcInstance.Label, probs.tolist())))
-
+                        dict(zip(SdqcInstance.Label, probs.tolist())))
         return results

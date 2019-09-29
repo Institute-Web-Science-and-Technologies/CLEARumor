@@ -46,7 +46,8 @@ class DatasetHelper(Dataset):
         self._dataset = []
         self._post_embeddings = post_embeddings
 
-    def calc_shared_features(self, post: Post) \
+    @classmethod
+    def calc_shared_features(cls, post: Post, post_embeddings: Dict[str, torch.Tensor]) \
             -> (np.ndarray, np.ndarray, np.ndarray):
         post_platform = [post.platform == Post.Platform.twitter,
                          post.platform == Post.Platform.reddit]
@@ -61,8 +62,8 @@ class DatasetHelper(Dataset):
 
         post_similarity_to_source = np.array(1)
         if not post.has_source_depth:
-            post_emb_mean = self._post_embeddings[post.id].mean(dim=1)
-            source_emb_mean = self._post_embeddings[post.source_id].mean(dim=1)
+            post_emb_mean = post_embeddings[post.id].mean(dim=1)
+            source_emb_mean = post_embeddings[post.source_id].mean(dim=1)
             post_similarity_to_source = F.cosine_similarity(
                 post_emb_mean, source_emb_mean, dim=0).cpu().numpy()
 
