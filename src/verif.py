@@ -80,7 +80,7 @@ class Verif:
             for instance in instances:
                 source_post = posts[instance.post_id]
 
-                post_features = self.calc_features(source_post, posts, sdqc_estimates)
+                post_features = self.calc_features(source_post, posts,post_embeddings, sdqc_estimates)
 
                 self._dataset.append({
                     'post_id': source_post.id,
