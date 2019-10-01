@@ -129,7 +129,10 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
                                    max_sentence_length: int,
                                    batch_size: int,
                                    scalar_mix_parameters: List[float],
-                                   device: torch.device) \
+                                   device: torch.device,
+                                   elmo_options_file: Path = ELMO_OPTIONS_FILE,
+                                   elmo_weights_file: Path = ELMO_WEIGHTS_FILE
+                                   ) \
         -> Dict[str, torch.Tensor]:
     """Calculate ELMo embeddings of all posts in the dataset.
 
@@ -152,6 +155,8 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
         scalar_mix_parameters: Parameters for mixing the different ELMo layers.
             See the paper for details on this.
         device: Device to execute on.
+        elmo_options_file: file path to options for ELMo embeddings.
+        elmo_weights_file: file path to weights for ELMo embeddings.
 
     Returns:
         A dictionary mapping post IDs to their respective ELMo embedding in a
@@ -162,8 +167,8 @@ def calculate_post_elmo_embeddings(posts: Dict[str, Post],
     print('Calculating post embeddings...')
     time_before = time()
 
-    elmo = Elmo(ELMO_OPTIONS_FILE,
-                ELMO_WEIGHTS_FILE,
+    elmo = Elmo(elmo_options_file,
+                elmo_weights_file,
                 num_output_representations=1,
                 dropout=0,
                 requires_grad=False,
