@@ -3,7 +3,9 @@ from setuptools import setup, find_packages
 setup(
     name='clearumor',
     version='1.0.2',
-    packages=find_packages(exclude=['contrib', 'docs', 'tests'],include=['src','src.*']),
+    packages=['src'],
+    author="Lukas Schmelzeisen and Ipek Baris",
+    author_email="ibaris@uni-koblenz.de",
     url='https://github.com/Institute-Web-Science-and-Technologies/CLEARumor',
     description='CLEARumor implementation',
     license = 'Apache License 2.0',
