@@ -2,6 +2,6 @@ allennlp==0.9.0
 torch==1.2.0
 numpy==1.17.2
 tokenizer==1.0.1
-tqdm==4.36.1
+tqdm==4.66.3
 scikit_learn==0.21.3
 typing==3.7.4.1
